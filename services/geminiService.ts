@@ -308,17 +308,17 @@ const callAISafe = async <T>(contents: any, systemInstruction: string | undefine
 };
 
 // ============================================================================
-// 👉 CẮT CẢNH AN TOÀN CHO AUTO-SYNC GIỌNG ĐỌC
+// 👉 CẮT CẢNH AN TOÀN CHO AUTO-SYNC GIỌNG ĐỌC (đếm theo SỐ KÝ TỰ)
 // Nguyên tắc: ranh giới cảnh LUÔN là biên câu thật (. ! ? … + xuống dòng) — nơi
 // giọng đọc có ngắt. KHÔNG BAO GIỜ cắt giữa câu / giữa từ / giữa tên / giữa số.
-// Câu quá ngắn → gộp tới ngân sách ~8s. Câu quá dài → chỉ chia tại DẤU CÂU thật
-// (; : — phẩy); nếu không có thì GIỮ NGUYÊN cả câu (an toàn hơn cắt sai).
+// Câu quá NGẮN (< MERGE_BELOW) → gộp với câu kế. Câu quá DÀI (> SPLIT_ABOVE) →
+// chỉ chia tại DẤU CÂU thật (; : — phẩy); không có dấu câu thì GIỮ NGUYÊN cả câu
+// (một cảnh hơi dài vẫn an toàn hơn cắt sai chỗ). Còn lại: mỗi câu = 1 cảnh.
 // ============================================================================
-// 👉 Chỉ cần chỉnh MỘT hằng số này theo tốc độ đọc thực tế của giọng đọc.
-const SYLL_PER_SEC = 5.0;                              // âm tiết/giây (giọng đọc tốc độ vừa)
-const TARGET_SYLL = Math.round(8 * SYLL_PER_SEC);      // mục tiêu ~8s / cảnh
-const MAX_SYLL = Math.round(11 * SYLL_PER_SEC);        // trần: vượt mới xét chia câu dài
-const MIN_SYLL = Math.round(3 * SYLL_PER_SEC);         // sàn: dưới mức này thì cố gộp thêm
+// 👉 3 hằng số dễ chỉnh theo ý bạn:
+const MERGE_BELOW = 30;    // câu ngắn hơn (ký tự) → gộp với câu kế
+const SPLIT_ABOVE = 150;   // câu dài hơn (ký tự) → mới xét chia (tại dấu câu)
+const TARGET_CHARS = 100;  // độ dài đích khi buộc phải chia câu dài
 
 const SENT_DOT = String.fromCharCode(1);               // sentinel che '.' không phải hết câu
 const SENT_COMMA = String.fromCharCode(2);             // sentinel che ',' trong số
@@ -342,16 +342,6 @@ const protectFalseBoundaries = (s: string): string => {
 };
 const restoreProtected = (s: string): string => s.split(SENT_DOT).join('.').split(SENT_COMMA).join(',');
 
-// Ước lượng số âm tiết NÓI: token có chữ số ~ số chữ số (năm 1945 ≈ 4); còn lại ~ 1.
-const spokenSyll = (tok: string): number => {
-  const digits = (tok.match(/\d/g) || []).length;
-  return digits > 0 ? Math.max(1, digits) : 1;
-};
-const syllCount = (s: string): number => {
-  const toks = s.trim().match(/\S+/g);
-  return toks ? toks.reduce((a, t) => a + spokenSyll(t), 0) : 0;
-};
-
 // BƯỚC 3: tách một đoạn (đã che, đã gộp khoảng trắng) thành các câu thật.
 // Nuốt dấu đóng ngoặc kép/ngoặc sau dấu kết thúc: '...tự do." Cả dân tộc...'
 const splitIntoSentences = (para: string): string[] => {
@@ -370,18 +360,18 @@ const endsUnsafe = (leftText: string): boolean => {
 };
 
 // BƯỚC 6: chia MỀM một câu quá dài — CHỈ tại dấu câu thật, KHÔNG dùng liên từ.
+// Đo bằng SỐ KÝ TỰ: mỗi mảnh ≤ SPLIT_ABOVE, ưu tiên điểm cắt gần TARGET_CHARS.
 const softSplitLongSentence = (sentence: string): string[] => {
   const tokens = sentence.split(/\s+/);
   const pieces: string[] = [];
   let start = 0;
   while (start < tokens.length) {
-    let remSyll = 0;
-    for (let k = start; k < tokens.length; k++) remSyll += spokenSyll(tokens[k]);
-    if (remSyll <= MAX_SYLL) { pieces.push(tokens.slice(start).join(' ')); break; }
+    const remLen = tokens.slice(start).join(' ').length;
+    if (remLen <= SPLIT_ABOVE) { pieces.push(tokens.slice(start).join(' ')); break; }
     let bestCut = -1, bestScore = -Infinity, cum = 0;
     for (let i = start; i < tokens.length - 1; i++) {
-      cum += spokenSyll(tokens[i]);
-      if (cum > MAX_SYLL) break;
+      cum += (i > start ? 1 : 0) + tokens[i].length;    // +1 cho khoảng trắng
+      if (cum > SPLIT_ABOVE) break;
       const tok = tokens[i];
       let priority = 0;
       if (/[;:]$/.test(tok)) priority = 3;
@@ -391,7 +381,7 @@ const softSplitLongSentence = (sentence: string): string[] => {
         if (!(prevNum && nextNum)) priority = 3;
       } else if (/,$/.test(tok)) priority = 2;          // phẩy thật (phẩy trong số đã bị che)
       if (priority > 0) {
-        const score = -Math.abs(cum - TARGET_SYLL) + priority * 0.001;
+        const score = -Math.abs(cum - TARGET_CHARS) + priority * 0.001;
         if (score > bestScore) { bestScore = score; bestCut = i + 1; }
       }
     }
@@ -423,24 +413,25 @@ const splitScriptByCode = (text: string, logic: string = 'default'): string[] =>
     else safeSentences.push(s);
   }
 
-  // BƯỚC 5: đóng gói câu trọn vẹn theo ngân sách âm tiết.
+  // BƯỚC 5: đóng gói — mỗi câu = 1 cảnh; câu < MERGE_BELOW gộp tiếp vào câu sau
+  // (gộp LẶP cho tới khi đủ dài); câu > SPLIT_ABOVE thì chia mềm tại dấu câu.
   const chunks: string[] = [];
-  let current = '';
-  const flush = () => { if (current.trim()) chunks.push(current.trim()); current = ''; };
-  for (const sentence of safeSentences) {
-    const sSyll = syllCount(sentence);
-    if (sSyll > MAX_SYLL) {                             // câu quá dài
-      flush();
-      if (allowSoftSplit) for (const p of softSplitLongSentence(sentence)) chunks.push(p);
-      else chunks.push(sentence);
-      continue;
+  let carry = '';
+  for (const raw of safeSentences) {
+    const s = carry ? carry + ' ' + raw : raw;
+    carry = '';
+    if (s.length < MERGE_BELOW) { carry = s; continue; }  // vẫn ngắn → gộp tiếp câu sau
+    if (allowSoftSplit && s.length > SPLIT_ABOVE) {
+      for (const p of softSplitLongSentence(s)) chunks.push(p);
+    } else {
+      chunks.push(s);
     }
-    if (!current) { current = sentence; continue; }
-    const combined = syllCount(current) + sSyll;
-    if (combined <= TARGET_SYLL || (syllCount(current) < MIN_SYLL && combined <= MAX_SYLL)) current += ' ' + sentence;
-    else { flush(); current = sentence; }
   }
-  flush();
+  // Câu ngắn còn sót ở CUỐI (không có câu sau) → gộp ngược vào cảnh trước.
+  if (carry) {
+    if (chunks.length) chunks[chunks.length - 1] += ' ' + carry;
+    else chunks.push(carry);
+  }
 
   return chunks.map(restoreProtected).filter(c => c.replace(/[^a-zA-Z0-9À-ỹ]/g, '').length > 0);
 };
