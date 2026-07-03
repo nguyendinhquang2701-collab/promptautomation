@@ -381,12 +381,12 @@ const PROMPT_SCHEMA = {
     type: Type.OBJECT,
     properties: {
       sceneId: { type: Type.INTEGER },
-      shot: { type: Type.STRING, description: "Shot size + angle + lens + DOF. e.g. 'Wide low-angle tracking shot, 35mm anamorphic, shallow depth of field'" },
-      narrative: { type: Type.STRING, description: "One flowing paragraph. Introduce each character with their VERBATIM_BLOCK inline (first mention only), then describe their actions — all woven together naturally. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) steps through the doorway as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) rises from his chair to greet her; Cecily Alderton pauses, Adrian Ashbourne extends a gloved hand.' Do NOT list all characters first then write actions separately." },
-      expression: { type: Type.STRING, description: "Facial expression / emotional beat per character. Empty string if no person on screen." },
-      setting: { type: Type.STRING, description: "Environment, period, weather, time of day, props in frame." },
-      lighting: { type: Type.STRING, description: "Light direction, color temperature, contrast, key/fill/rim, named scheme." },
-      camera_motion: { type: Type.STRING, description: "Camera movement through the 8 seconds." },
+      shot: { type: Type.STRING, description: "Shot size + neutral angle + lens + DOF, Medium/Wide preferred. e.g. 'Static medium-wide eye-level shot, 35mm, moderate depth of field'. Never a tight close-up on hands." },
+      narrative: { type: Type.STRING, description: "One flowing paragraph. Introduce each character with their VERBATIM_BLOCK inline (first mention only), then give each ONE simple, stable action — woven together naturally. Keep actions calm and single (standing, sitting, looking, slowly turning, gently stirring); no fast or intricate motion. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) stands quietly by the window as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) sits calmly at the desk, gaze lifting toward Cecily Alderton.' Do NOT list all characters first then write actions separately." },
+      expression: { type: Type.STRING, description: "Subtle facial expression / emotional beat per character. Empty string if no person on screen." },
+      setting: { type: Type.STRING, description: "Environment, period, weather, time of day, props in frame, plus any gentle environmental motion (smoke, steam, candle flicker, wind)." },
+      lighting: { type: Type.STRING, description: "Light direction, color temperature, contrast, key/fill/rim, named scheme. Prefer soft over hard light." },
+      camera_motion: { type: Type.STRING, description: "LOCKED camera: 'static lock-off' by default, or at most ONE single very slow push-in / pull-back. Never orbit, crane, tracking, handheld, whip pan, zoom, or drone." },
       style_tail: { type: Type.STRING, description: "Style summary + quality anchors. MUST end with the exact phrase: Rendered in the style of <styleSummary>." },
       _validation_subjects: { type: Type.STRING, description: "Comma-separated list of every CANONICAL_NAME that appears in this scene. Used for internal validation only." }
     },
@@ -394,16 +394,41 @@ const PROMPT_SCHEMA = {
   }
 };
 
-const CINEMATOGRAPHY_GLOSSARY = `=== CINEMATOGRAPHY GLOSSARY (pick vocabulary ONLY from these lists) ===
-SHOT_SIZES: Extreme Close-Up (ECU), Close-Up (CU), Medium Close-Up (MCU), Medium Shot (MS), Medium Long Shot (MLS), Long Shot (LS), Wide Shot (WS), Extreme Long Shot (ELS), Over-the-Shoulder (OTS), Two-Shot, Insert, Cutaway, POV.
-ANGLES: eye-level, low-angle, high-angle, Dutch tilt, overhead / bird's-eye, worm's-eye, profile, three-quarter front, three-quarter back.
-LENSES: 14mm ultra-wide, 24mm wide, 35mm normal, 50mm standard, 85mm portrait, 135mm tele, 200mm long-tele, anamorphic 1.33x, anamorphic 2x, macro, fisheye.
-DOF: shallow depth of field, deep focus, rack focus, bokeh-rich, split focus.
-CAMERA_MOTION: static lock-off, slow dolly-in, dolly-out, lateral tracking left, lateral tracking right, crane up, crane down, jib, handheld sway, Steadicam glide, gimbal smooth, whip pan, push-in, pull-back, orbit clockwise, orbit counter-clockwise, POV walking, drone aerial, parallax pass-by, slow zoom-in, slow zoom-out.
-LIGHTING_SCHEMES: high-key, low-key, chiaroscuro, Rembrandt, three-point, motivated practical, golden hour 5500K, blue hour 10000K, tungsten 3200K, daylight 5600K, neon, candlelight, moonlight, hard direct, soft diffused, rim/back light, kicker, fill, hair light, top light, side light, underlight.
-COMPOSITION: rule of thirds, centered framing, leading lines, symmetrical, negative space, foreground/midground/background layering, frame within a frame, depth cues.
-EMOTION_TAGS: contemplative, resolute, anxious, tender, furious, melancholic, awed, defiant, sorrowful, jubilant, suspicious, tender half-smile, narrowed eyes, parted lips, clenched jaw, watery eyes, knitted brow.
+// 👉 TỪ VỰNG STOCK-SAFE: cố tình tiết chế. Ưu tiên medium/wide + camera tĩnh (tối đa
+// 1 push-in/pull-back chậm) để tránh artifact. KHÔNG còn ECU/close-up bàn tay, KHÔNG
+// còn orbit/crane/whip pan/handheld — đây là các nguồn gây lỗi thừa chi, méo tay, morph.
+const CINEMATOGRAPHY_GLOSSARY = `=== STOCK-SAFE VISUAL GLOSSARY (pick vocabulary ONLY from these lists) ===
+SHOT_SIZES (prefer the safe ones — Medium/Wide): Wide Shot (WS), Medium Long Shot (MLS), Medium Shot (MS), Long Shot (LS), Extreme Long Shot (ELS), establishing shot. AVOID close framing on people; NEVER frame tight on hands.
+ANGLES (keep neutral): eye-level, slight low-angle, slight high-angle, straight-on / frontal, three-quarter front. AVOID Dutch tilt, worm's-eye, extreme overhead.
+LENSES: 24mm wide, 35mm normal, 50mm standard. (Long tele / macro / fisheye NOT used — they exaggerate distortion.)
+DOF: moderate depth of field, deep focus. (No rack focus, no split focus.)
+CAMERA_MOTION (LOCKED — choose ONE): static lock-off (DEFAULT, preferred) OR one single very slow push-in OR one single very slow pull-back. Nothing else — no dolly-sideways, tracking, crane, jib, handheld, gimbal, orbit, whip pan, zoom, drone, POV.
+ENVIRONMENTAL_MOTION (use this INSTEAD of body motion to keep the shot alive): drifting smoke, rising steam, flickering candle/firelight, wind stirring fabric or grass, falling dust motes, gentle ripples on water, slow-drifting clouds, embers floating.
+LIGHTING_SCHEMES: soft diffused daylight, golden hour 5500K, overcast soft light, candlelight, motivated practical, Rembrandt, rim/back light, side light, top light. Prefer SOFT over hard light (hard light exaggerates artifacts).
+COMPOSITION: rule of thirds, centered framing, symmetrical, negative space, leading lines, foreground/midground/background layering, depth cues.
+EMOTION_TAGS: contemplative, resolute, calm, solemn, tender, melancholic, awed, weary, watchful, faint smile, steady gaze, softened brow. (Keep expressions subtle and natural.)
 === END GLOSSARY ===`;
+
+// 👉 QUY TẮC CHỐNG LỖI (ưu tiên #1 cho video sạch, không thừa chi/méo tay/quái dị).
+// Đặt TRÊN cả yếu tố điện ảnh: thà đơn giản mà sạch còn hơn đẹp mà lỗi.
+const ANTI_ARTIFACT_RULE = `=== ANTI-ARTIFACT RULE (CRITICAL — HIGHEST PRIORITY, ABOVE ANY CINEMATIC FLAIR) ===
+GOAL: clean, error-free footage for historical B-roll / stock replacement. A simple clean shot ALWAYS beats a fancy shot that risks warped anatomy. Cinematic beauty is SECONDARY to being artifact-free.
+
+DO:
+- Prefer Medium/Wide framing on people so bodies and hands stay small and stable.
+- Give each person ONE single simple action, or a still, stable pose (standing, sitting, looking, slowly turning the head, gently stirring, slowly walking).
+- Keep hands relaxed, low-detail, or out of tight framing. NEVER stage intricate finger work / counting / complex object manipulation in close view.
+- Keep the number of people LOW and interaction MINIMAL. If several people are present, they mostly stand/sit calmly; no tangled group action.
+- Prefer OBJECTS and ENVIRONMENTS as the subject when possible (props, landscapes, food, tools, architecture) — they morph far less than human bodies.
+- Keep the shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) rather than complex body motion.
+
+AVOID (these are the top causes of AI artifacts):
+- Tight close-ups of hands or faces performing detailed motion.
+- Fast movement, running, fighting, dancing, sudden gestures (cause jelly/morphing).
+- Crowds and dense multi-person interaction (faces and limbs merge).
+- Elaborate armor/costume with heavy fine detail in close framing.
+- Any camera move beyond a single very slow push-in / pull-back.
+=== END ANTI-ARTIFACT RULE ===`;
 
 // 👉 QUY TẮC LÕI: Mỗi cảnh 8 giây CHỈ được là MỘT khoảnh khắc liên tục, MỘT bối cảnh,
 // MỘT hành động đơn. Nếu một câu thoại/đoạn văn chứa nhiều ý, nhiều địa điểm hoặc nhiều
@@ -423,7 +448,7 @@ HARD BANS (these break the video):
 - NO chaining of separate actions. The subject performs ONE clear action that can plausibly happen in 8 continuous seconds.
 - NO scene cuts of any kind.
 
-The camera may move (dolly, pan, orbit, etc.) but stays on the SAME continuous moment in the SAME place. Multiple characters interacting in the SAME place at the SAME time is allowed — that is still one moment.
+The camera stays essentially LOCKED. It is either fully static (locked-off) or performs at most ONE single very slow push-in or pull-back — never orbit, crane, whip pan, handheld, or any fast/complex move. It stays on the SAME continuous moment in the SAME place. Multiple characters present in the SAME place at the SAME time is allowed, but they hold simple stable poses — that is still one moment.
 === END SINGLE-MOMENT RULE ===`;
 
 // 👉 QUY TẮC AN TOÀN: TUYỆT ĐỐI không để tên người nổi tiếng / người thật ngoài đời
@@ -721,6 +746,9 @@ ${CELEBRITY_SAFETY_RULE}
 ${SINGLE_MOMENT_RULE}
 Apply this to the 'narrative', 'setting' and 'camera_motion' fields: depict ONLY the single selected moment. If the input scene text implies several locations or actions, pick the one most important moment and write the prompt for that alone — silently drop the rest.
 
+${ANTI_ARTIFACT_RULE}
+Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, keep the camera locked, and lean on environmental motion. Being artifact-free outranks looking cinematic.
+
 CONTEXT: ${globalContext}
 
 COLOR GRADING: ${colorMoodDesc}
@@ -734,10 +762,10 @@ ${charProfiles}
 === END DICTIONARY ===
 
 NARRATIVE RULE — how to write the 'narrative' field when characters are present:
-The 'narrative' is ONE flowing paragraph. It must weave character descriptions and actions together naturally — NOT list all characters first and actions after.
+The 'narrative' is ONE flowing paragraph. It must weave each character's VERBATIM_BLOCK together with ONE simple, stable action each — NOT list all characters first and actions after. Keep every action calm and single (standing, sitting, looking, slowly turning the head, gently holding an object). No fast, intricate, or multi-step motion. Interaction between people stays minimal.
 
 PATTERN:
-  "[Character A VERBATIM_BLOCK] [does action A], while [Character B VERBATIM_BLOCK] [does action B]; [Character A bare name] [continues action]."
+  "[Character A VERBATIM_BLOCK] [holds one simple pose / does one calm action], while [Character B VERBATIM_BLOCK] [holds one simple pose / does one calm action]; [Character A bare name] [keeps that single quiet action]."
 
 HOW TO EMBED VERBATIM_BLOCK:
   - Take the exact string from the VERBATIM_BLOCK field in the Character Dictionary (the string inside the quotes "...").
@@ -745,21 +773,23 @@ HOW TO EMBED VERBATIM_BLOCK:
   - Do NOT add, remove, or rephrase any word. Copy it character-for-character.
   - Second and later mentions of the same character: use only the bare CANONICAL_NAME — no pronoun, no generic noun.
 
-EXAMPLE (3-character scene, follow this narrative pattern):
+EXAMPLE (3-character scene, follow this narrative pattern — note the calm, single actions):
   Dictionary:
     CANONICAL_NAME="Edmund", VERBATIM_BLOCK: "Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat)"
     CANONICAL_NAME="Lady Whitmore", VERBATIM_BLOCK: "Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker)"
     CANONICAL_NAME="Clara", VERBATIM_BLOCK: "Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown)"
 
-  ✅ CORRECT narrative:
-    "Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat) stands fixed in the foreground with formal stillness, gaze drifting past Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker) as she presents social compliments toward Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown); midway through the shot Edmund shifts Edmund's gaze toward the ballroom center, ending with Clara held in polite proximity while Edmund's attention drifts elsewhere."
+  ✅ CORRECT narrative (medium-wide, everyone calm and mostly still):
+    "In a medium-wide framing, Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat) stands quietly at the left with a steady, formal posture, while Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker) sits composed in an armchair and Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown) stands near the window; Edmund slowly turns Edmund's head toward the room's center as candle flames flicker and dust drifts in the soft light."
 
   ❌ WRONG (all descriptions first, actions after):
-    "Edmund (distinguished lord). Lady Whitmore (stately matriarch). Clara (slender woman). Edmund remains fixed in the foreground... Lady Whitmore presents compliments... Clara stands nearby."
+    "Edmund (distinguished lord). Lady Whitmore (stately matriarch). Clara (slender woman). Edmund stands... Lady Whitmore sits... Clara waits."
   ❌ WRONG (shortened VERBATIM_BLOCK):
-    "Edmund (English lord in navy tailcoat) stands fixed..."  — missing age, hair, jaw, frame.
+    "Edmund (English lord in navy tailcoat) stands..."  — missing age, hair, jaw, frame.
   ❌ WRONG (pronoun used):
-    "Edmund stands fixed. He shifts his gaze..." — must be "Edmund shifts Edmund's gaze".
+    "Edmund stands. He turns his head..." — must be "Edmund slowly turns Edmund's head".
+  ❌ WRONG (busy / fast / intricate action):
+    "Edmund strides across the hall gesturing sharply while Clara hurriedly counts coins in close-up." — too much motion, tight hand work → artifacts.
 
 ABSOLUTE NAMING RULES:
 A. Every CANONICAL_NAME in _validation_subjects MUST appear in 'narrative' at least once with its full VERBATIM_BLOCK on first mention.
@@ -768,7 +798,7 @@ C. After first mention: bare CANONICAL_NAME only. NEVER pronouns (he/she/they/hi
 D. If input has REQUIRED_FULL_DESCRIPTIONS, every string there must appear verbatim inside 'narrative'.
 ` : `
 NARRATIVE RULE (no listed characters):
-Write a dense, motion-driven paragraph describing the main subject and action unfolding over 8 seconds. Introduce the subject with full visual detail on first mention.
+Write a calm, single-subject paragraph describing ONE main subject (prefer an object, prop, or environment) held in a stable shot over 8 seconds. Introduce the subject with full visual detail on first mention. Keep it alive with environmental motion (smoke, steam, wind, ripples, flickering light) rather than complex action.
 `}
 
 ABSOLUTE MANDATORY RULES:
@@ -778,15 +808,17 @@ ABSOLUTE MANDATORY RULES:
 3. STYLE TAIL must end exactly with: "Rendered in the style of ${finalStyleStr}."
 4. 'lighting' must integrate the COLOR GRADING listed above.
 5. No word "cut" anywhere. No location change, no time jump, no second action — ONE continuous moment only (see SINGLE-MOMENT RULE).
-6. CINEMATIC LANGUAGE: pull vocabulary from the GLOSSARY. Generic phrasing is rejected.
-${options?.audioMode !== 'keep' ? '7. ZERO-AUDIO: NO dialogue, quotes, text on screen, voiceovers, sound descriptions. Describe ONLY visuals.' : ''}
-DENSITY: narrative has no character limit — VERBATIM_BLOCKs must be preserved in full. Other fields: 1-3 tight sentences each.`;
+6. ARTIFACT-FREE OVER CINEMATIC: obey the ANTI-ARTIFACT RULE first. Pull vocabulary from the STOCK-SAFE GLOSSARY; keep framing Medium/Wide, camera locked, actions simple. Never trade safety for flair.
+${options?.audioMode !== 'keep' ? '7. AMBIENT-ONLY AUDIO: describe ONLY visuals. No dialogue, quotes, on-screen text, voiceover. If sound is implied, treat it as quiet ambient environmental sound only — no dialogue, no music.' : ''}
+DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays lean — one calm action per subject, no padding. Other fields: 1-3 tight sentences each.`;
 
   const PROMPT_BATCH_SIZE = 5;
   const batches: Scene[][] = [];
   for (let i = 0; i < segment.scenes.length; i += PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + PROMPT_BATCH_SIZE));
 
-  const NEGATIVE_TAIL = "Avoid text overlays, watermarks, captions, warped anatomy, extra fingers, distorted faces, morphing limbs, oversaturated colors, plastic skin, uncanny eyes.";
+  // 👉 Cue KHẲNG ĐỊNH (consistent anatomy...) đặt trước, rồi mới tới danh sách phủ định
+  // NGẮN & CỤ THỂ nhắm đúng lỗi hay gặp — theo đúng cách VEO 3 phản hồi tốt nhất.
+  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, oversaturated colors, plastic skin, text, watermark, caption.";
 
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
