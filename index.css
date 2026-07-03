@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --animate-fade-in: fade-in 0.5s ease-out;
+  --animate-fade-in-up: fade-in-up 0.5s ease-out;
+  
+  --keyframes-fade-in: {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
+  };
+  --keyframes-fade-in-up: {
+    0% { opacity: 0; transform: translateY(20px); }
+    100% { opacity: 1; transform: translateY(0); }
+  };
+}
+
+body {
+  background-color: #020617; /* Slate 950 - Chuẩn Enterprise */
+  color: #f8fafc;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
+/* BỔ SUNG: Ép con trỏ chuột thành hình bàn tay cho TẤT CẢ các nút bấm tương tác */
+button:not(:disabled),
+[role="button"]:not(:disabled),
+select {
+  cursor: pointer !important;
+}
+
+/* Các nút đang bị vô hiệu hóa (loading/chưa điền đủ thông tin) sẽ hiện biển báo cấm */
+button:disabled {
+  cursor: not-allowed !important;
+  opacity: 0.6;
+}
+
+/* Thêm hiệu ứng con trỏ văn bản cho các ô nhập liệu để UX mượt hơn */
+input[type="text"], 
+textarea {
+  cursor: text;
+}
