@@ -54,7 +54,6 @@ export enum AppState {
   INPUT = 'INPUT',
   SCENE_REVIEW = 'SCENE_REVIEW',
   RESULT = 'RESULT',
-  DASHBOARD = 'DASHBOARD',
 }
 
 export interface PromptResult {

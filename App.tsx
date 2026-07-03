@@ -2,20 +2,12 @@ import React, { useState, useEffect } from 'react';
 import ScriptInput from './components/ScriptInput';
 import SceneList from './components/SceneList';
 import PromptOutput from './components/PromptOutput';
-import Dashboard from './components/Dashboard'; 
 import Header from './components/Header';
 import { AppState, ScriptProject, ColorStyle, CharacterIdentity } from './types';
 import { analyzeSingleSegmentToScenes, generatePromptsForSingleSegment, extractContextAndCharacters, analyzeImageStyle, AI_PROVIDERS, repairFailedScenes, PromptOptions } from './services/geminiService';
 
-const LICENSE_DB_URL = "https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app/veo3_licenses.json";
-
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(() => (localStorage.getItem('app1_appState') as AppState) || AppState.INPUT);
-
-  const [isCheckingLicense, setIsCheckingLicense] = useState(true);
-  const [isLicensed, setIsLicensed] = useState(false);
-  const [licenseKeyInput, setLicenseKeyInput] = useState('');
-  const [licenseError, setLicenseError] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [contextLoading, setContextLoading] = useState(false);
@@ -63,90 +55,7 @@ const App: React.FC = () => {
     });
   });
 
-  const generateFingerprint = async () => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.textBaseline = "top";
-      ctx.font = "14px 'Arial'";
-      ctx.fillStyle = "#f60";
-      ctx.fillRect(125,1,62,20);
-      ctx.fillStyle = "#069";
-      ctx.fillText("Veo3Enterprise", 2, 15);
-      ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
-      ctx.fillText("Veo3Enterprise", 4, 17);
-    }
-    const canvasData = canvas.toDataURL();
-    const navInfo = navigator.userAgent + navigator.hardwareConcurrency + navigator.language + window.screen.width + window.screen.height;
-    let hash = 0;
-    const str = canvasData + navInfo;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash) + str.charCodeAt(i);
-      hash = hash & hash;
-    }
-    return `HW-${Math.abs(hash).toString(16).toUpperCase()}`;
-  };
-
-  const verifyLicense = async (keyToCheck: string) => {
-    setLicenseError('');
-    try {
-      const hwId = await generateFingerprint();
-      const res = await fetch(LICENSE_DB_URL);
-      const data = await res.json();
-      
-      if (!data || !data[keyToCheck]) {
-         setLicenseError('❌ Mã bản quyền không tồn tại hoặc đã bị thu hồi!');
-         setIsLicensed(false);
-         setIsCheckingLicense(false);
-         return;
-      }
-
-      const licenseInfo = data[keyToCheck];
-      const now = Date.now();
-
-      if (!licenseInfo.deviceId) {
-         // 👉 SỬA ĐỔI: Xử lý nội suy nếu durationMs là -1
-         const expiresAt = licenseInfo.durationMs === -1 ? -1 : now + licenseInfo.durationMs;
-         
-         await fetch(`https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app/veo3_licenses/${keyToCheck}.json`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId: hwId, expiresAt, activatedAt: now })
-         });
-         localStorage.setItem('app1_license_key', keyToCheck);
-         localStorage.setItem('app1_license_expiry', expiresAt.toString());
-         setIsLicensed(true);
-      } 
-      else if (licenseInfo.deviceId === hwId) {
-         // 👉 SỬA ĐỔI: Kiểm tra bypass, nếu expiresAt !== -1 thì mới xét hết hạn
-         if (licenseInfo.expiresAt !== -1 && now > licenseInfo.expiresAt) {
-            setLicenseError('⏳ Mã bản quyền của bạn đã hết hạn!');
-            setIsLicensed(false);
-         } else {
-            localStorage.setItem('app1_license_key', keyToCheck);
-            localStorage.setItem('app1_license_expiry', licenseInfo.expiresAt.toString());
-            setIsLicensed(true);
-         }
-      } 
-      else {
-         setLicenseError('🚨 CẢNH BÁO: Mã bản quyền này ĐÃ ĐƯỢC GẮN VỚI MỘT THIẾT BỊ KHÁC! Vui lòng mua mã mới để sử dụng.');
-         setIsLicensed(false);
-      }
-    } catch (e) {
-      setLicenseError('🌐 Lỗi kết nối mạng khi kiểm tra bản quyền.');
-      setIsLicensed(false);
-    }
-    setIsCheckingLicense(false);
-  };
-
   useEffect(() => {
-    const savedKey = localStorage.getItem('app1_license_key');
-    if (savedKey) verifyLicense(savedKey);
-    else setIsCheckingLicense(false);
-  }, []);
-
-  useEffect(() => {
-    if(!isLicensed) return;
     localStorage.setItem('app1_appState', appState);
     localStorage.setItem('app1_rawScript', rawScript);
     localStorage.setItem('app1_globalContext', globalContext);
@@ -158,7 +67,7 @@ const App: React.FC = () => {
     localStorage.setItem('app1_projects', JSON.stringify(projects));
     localStorage.setItem('app1_imagePreview', imagePreview || '');
     localStorage.setItem('app1_promptOptions', JSON.stringify(promptOptions));
-  }, [appState, rawScript, globalContext, customPromptSuffix, styleAnalysis, styleSummary, characters, colorStyle, projects, imagePreview, promptOptions, isLicensed]);
+  }, [appState, rawScript, globalContext, customPromptSuffix, styleAnalysis, styleSummary, characters, colorStyle, projects, imagePreview, promptOptions]);
 
   const hasScenes = projects.some(p => p.scenes && p.scenes.length > 0);
   const hasPrompts = projects.some(p => p.promptItems && p.promptItems.length > 0);
@@ -408,23 +317,19 @@ const App: React.FC = () => {
 
   const resetApp = () => {
     if (window.confirm("Làm mới dự án? Màn hình này sẽ được xóa sạch để làm kịch bản mới.")) {
-        const lic = localStorage.getItem('app1_license_key');
-        const exp = localStorage.getItem('app1_license_expiry'); 
         const provider = localStorage.getItem('app1_ai_provider');
         const apiTier = localStorage.getItem('app1_api_tier');
-        
+
         const customProviders = localStorage.getItem('app1_custom_providers');
-        
+
         const keysToSave: Record<string, string | null> = {};
         Object.keys(AI_PROVIDERS).forEach(key => {
             const storageKey = `app1_${AI_PROVIDERS[key].keyPrefix}_api_keys`;
             keysToSave[storageKey] = localStorage.getItem(storageKey);
         });
-        
-        localStorage.clear(); 
 
-        if(lic) localStorage.setItem('app1_license_key', lic);
-        if(exp) localStorage.setItem('app1_license_expiry', exp);
+        localStorage.clear();
+
         if(provider) localStorage.setItem('app1_ai_provider', provider);
         if(apiTier) localStorage.setItem('app1_api_tier', apiTier);
         
@@ -439,33 +344,6 @@ const App: React.FC = () => {
         setProjects([{ id: Date.now().toString(), name: 'Phân đoạn 1', content: '', scenes: [], promptItems: [], sceneStatus: 'idle', promptStatus: 'idle' }]);
     }
   };
-
-  if (isCheckingLicense) return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full"></div></div>;
-
-  if (!isLicensed) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 selection:bg-indigo-500">
-        <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl text-center relative overflow-hidden">
-           <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"></div>
-           <div className="w-20 h-20 bg-slate-950 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner border border-slate-800">
-             <span className="text-4xl">🔐</span>
-           </div>
-           <h2 className="text-2xl font-black text-white mb-2 tracking-tight">VEO 3 ENTERPRISE</h2>
-           <p className="text-slate-400 text-sm mb-8">Vui lòng nhập Mã Bản Quyền (License Key) để kích hoạt phần mềm. Mỗi mã chỉ dùng cho 1 thiết bị.</p>
-           
-           <input type="text" value={licenseKeyInput} onChange={e => { setLicenseKeyInput(e.target.value.toUpperCase()); setLicenseError(''); }} placeholder="VD: PRO-XXXX-YYYY" className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 text-white rounded-xl p-4 text-center font-mono text-lg tracking-widest outline-none mb-4 uppercase transition-all" />
-           
-           {licenseError && <p className="text-red-400 text-sm mb-4 bg-red-500/10 p-3 rounded-lg border border-red-500/20 animate-fade-in">{licenseError}</p>}
-           
-           <button onClick={() => verifyLicense(licenseKeyInput)} disabled={!licenseKeyInput} className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-indigo-500/20">Xác Thực Bản Quyền</button>
-           <p className="text-[10px] text-slate-500 mt-6 flex items-center justify-center gap-1">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" /></svg>
-              Hệ thống khóa phần cứng chống sao chép đang được bật.
-           </p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-200">
