@@ -308,17 +308,19 @@ const callAISafe = async <T>(contents: any, systemInstruction: string | undefine
 };
 
 // ============================================================================
-// 👉 CẮT CẢNH AN TOÀN CHO AUTO-SYNC GIỌNG ĐỌC (đếm theo SỐ KÝ TỰ)
+// 👉 CẮT & GHÉP CẢNH TỐI ƯU CHO AUTO-SYNC GIỌNG ĐỌC (đếm theo SỐ KÝ TỰ)
 // Nguyên tắc: ranh giới cảnh LUÔN là biên câu thật (. ! ? … + xuống dòng) — nơi
 // giọng đọc có ngắt. KHÔNG BAO GIỜ cắt giữa câu / giữa từ / giữa tên / giữa số.
-// Câu quá NGẮN (< MERGE_BELOW) → gộp với câu kế. Câu quá DÀI (> SPLIT_ABOVE) →
-// chỉ chia tại DẤU CÂU thật (; : — phẩy); không có dấu câu thì GIỮ NGUYÊN cả câu
-// (một cảnh hơi dài vẫn an toàn hơn cắt sai chỗ). Còn lại: mỗi câu = 1 cảnh.
+// Ghép các câu liền nhau thành cảnh bằng QUY HOẠCH ĐỘNG: tối thiểu tổng "độ xấu"
+// → không cảnh nào ngắn quá / dài quá, ưu tiên vùng đẹp, tự tránh câu lẻ loi,
+// ưu tiên ghép tiến. Câu đơn > MAX_CHARS mới chia mềm tại DẤU CÂU thật.
 // ============================================================================
-// 👉 3 hằng số dễ chỉnh theo ý bạn:
-const MERGE_BELOW = 30;    // câu ngắn hơn (ký tự) → gộp với câu kế
-const SPLIT_ABOVE = 150;   // câu dài hơn (ký tự) → mới xét chia (tại dấu câu)
-const TARGET_CHARS = 100;  // độ dài đích khi buộc phải chia câu dài
+// 👉 4 hằng số dễ chỉnh theo ý bạn (đơn vị: ký tự):
+const MIN_CHARS = 20;      // sàn — dưới mức này bị phạt nặng (gần như cấm)
+const MAX_CHARS = 150;     // trần cứng — nhóm nhiều câu không được vượt
+const IDEAL_LO = 50;       // vùng ĐẸP: từ IDEAL_LO
+const IDEAL_HI = 100;      //           đến IDEAL_HI → độ xấu = 0
+const SOFT_TARGET = Math.round((IDEAL_LO + IDEAL_HI) / 2); // đích khi buộc chia câu >150
 
 const SENT_DOT = String.fromCharCode(1);               // sentinel che '.' không phải hết câu
 const SENT_COMMA = String.fromCharCode(2);             // sentinel che ',' trong số
@@ -359,19 +361,19 @@ const endsUnsafe = (leftText: string): boolean => {
   return false;
 };
 
-// BƯỚC 6: chia MỀM một câu quá dài — CHỈ tại dấu câu thật, KHÔNG dùng liên từ.
-// Đo bằng SỐ KÝ TỰ: mỗi mảnh ≤ SPLIT_ABOVE, ưu tiên điểm cắt gần TARGET_CHARS.
+// BƯỚC 6: chia MỀM một câu quá dài (> MAX_CHARS) — CHỈ tại dấu câu thật, KHÔNG dùng
+// liên từ. Đo bằng SỐ KÝ TỰ: mỗi mảnh ≤ MAX_CHARS, ưu tiên điểm cắt gần SOFT_TARGET.
 const softSplitLongSentence = (sentence: string): string[] => {
   const tokens = sentence.split(/\s+/);
   const pieces: string[] = [];
   let start = 0;
   while (start < tokens.length) {
     const remLen = tokens.slice(start).join(' ').length;
-    if (remLen <= SPLIT_ABOVE) { pieces.push(tokens.slice(start).join(' ')); break; }
+    if (remLen <= MAX_CHARS) { pieces.push(tokens.slice(start).join(' ')); break; }
     let bestCut = -1, bestScore = -Infinity, cum = 0;
     for (let i = start; i < tokens.length - 1; i++) {
       cum += (i > start ? 1 : 0) + tokens[i].length;    // +1 cho khoảng trắng
-      if (cum > SPLIT_ABOVE) break;
+      if (cum > MAX_CHARS) break;
       const tok = tokens[i];
       let priority = 0;
       if (/[;:]$/.test(tok)) priority = 3;
@@ -381,7 +383,7 @@ const softSplitLongSentence = (sentence: string): string[] => {
         if (!(prevNum && nextNum)) priority = 3;
       } else if (/,$/.test(tok)) priority = 2;          // phẩy thật (phẩy trong số đã bị che)
       if (priority > 0) {
-        const score = -Math.abs(cum - TARGET_CHARS) + priority * 0.001;
+        const score = -Math.abs(cum - SOFT_TARGET) + priority * 0.001;
         if (score > bestScore) { bestScore = score; bestCut = i + 1; }
       }
     }
@@ -390,6 +392,40 @@ const softSplitLongSentence = (sentence: string): string[] => {
     start = bestCut;
   }
   return pieces;
+};
+
+// Độ "xấu" của một cảnh dài L ký tự (càng nhỏ càng đẹp) — dùng cho DP ghép cảnh.
+const sceneBadness = (L: number): number => {
+  let c = 0;
+  if (L < IDEAL_LO) c += (IDEAL_LO - L) ** 2;          // ngắn hơn vùng đẹp
+  else if (L > IDEAL_HI) c += (L - IDEAL_HI) ** 2;     // dài hơn vùng đẹp
+  if (L < MIN_CHARS) c += 100000;                      // dưới sàn → phạt nặng
+  if (L > MAX_CHARS) c += 100000 + (L - MAX_CHARS) ** 2; // quá trần (chỉ với câu đơn buộc phải)
+  return c;
+};
+
+// Ghép các "đơn vị" (câu trọn vẹn) liền nhau thành cảnh, tối thiểu TỔNG độ xấu (DP).
+// Nhìn xa toàn cục → tự ưu tiên vùng đẹp, tránh câu lẻ, ưu tiên ghép tiến.
+const packScenesOptimally = (units: string[]): string[] => {
+  const n = units.length;
+  if (n === 0) return [];
+  const dp: number[] = new Array(n + 1).fill(Infinity);
+  const nextIdx: number[] = new Array(n + 1).fill(-1);
+  dp[n] = 0;
+  for (let i = n - 1; i >= 0; i--) {
+    let acc = '';
+    for (let j = i; j < n; j++) {
+      acc = acc ? acc + ' ' + units[j] : units[j];
+      const L = acc.length;
+      if (j > i && L > MAX_CHARS) break;               // gộp thêm là vượt trần → dừng
+      const c = sceneBadness(L) + dp[j + 1];
+      if (c < dp[i]) { dp[i] = c; nextIdx[i] = j + 1; } // strict '<' → hòa thì chọn nhóm ít câu hơn
+    }
+  }
+  const scenes: string[] = [];
+  let i = 0;
+  while (i < n && nextIdx[i] !== -1) { scenes.push(units.slice(i, nextIdx[i]).join(' ')); i = nextIdx[i]; }
+  return scenes;
 };
 
 // logic='default' → cho phép chia mềm câu dài tại dấu câu.
@@ -413,25 +449,19 @@ const splitScriptByCode = (text: string, logic: string = 'default'): string[] =>
     else safeSentences.push(s);
   }
 
-  // BƯỚC 5: đóng gói — mỗi câu = 1 cảnh; câu < MERGE_BELOW gộp tiếp vào câu sau
-  // (gộp LẶP cho tới khi đủ dài); câu > SPLIT_ABOVE thì chia mềm tại dấu câu.
-  const chunks: string[] = [];
-  let carry = '';
-  for (const raw of safeSentences) {
-    const s = carry ? carry + ' ' + raw : raw;
-    carry = '';
-    if (s.length < MERGE_BELOW) { carry = s; continue; }  // vẫn ngắn → gộp tiếp câu sau
-    if (allowSoftSplit && s.length > SPLIT_ABOVE) {
-      for (const p of softSplitLongSentence(s)) chunks.push(p);
+  // BƯỚC 5a: dựng "đơn vị" ghép — mỗi câu là 1 đơn vị; câu đơn > MAX_CHARS thì chia
+  // mềm trước tại DẤU CÂU thật thành nhiều mảnh (mỗi mảnh là 1 đơn vị).
+  const units: string[] = [];
+  for (const s of safeSentences) {
+    if (allowSoftSplit && s.length > MAX_CHARS) {
+      for (const p of softSplitLongSentence(s)) units.push(p);
     } else {
-      chunks.push(s);
+      units.push(s);
     }
   }
-  // Câu ngắn còn sót ở CUỐI (không có câu sau) → gộp ngược vào cảnh trước.
-  if (carry) {
-    if (chunks.length) chunks[chunks.length - 1] += ' ' + carry;
-    else chunks.push(carry);
-  }
+
+  // BƯỚC 5b: ghép các đơn vị liền nhau thành cảnh TỐI ƯU bằng quy hoạch động.
+  const chunks = packScenesOptimally(units);
 
   return chunks.map(restoreProtected).filter(c => c.replace(/[^a-zA-Z0-9À-ỹ]/g, '').length > 0);
 };
