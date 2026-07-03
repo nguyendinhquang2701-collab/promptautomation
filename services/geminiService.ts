@@ -307,71 +307,133 @@ const callAISafe = async <T>(contents: any, systemInstruction: string | undefine
   return await callGeminiSafe<T>(contents, systemInstruction, schema, providerConfig.model, temperature, limiter, providerId);
 };
 
+// ============================================================================
+// 👉 CẮT CẢNH AN TOÀN CHO AUTO-SYNC GIỌNG ĐỌC (đếm theo SỐ KÝ TỰ)
+// Nguyên tắc: ranh giới cảnh LUÔN là biên câu thật (. ! ? … + xuống dòng) — nơi
+// giọng đọc có ngắt. KHÔNG BAO GIỜ cắt giữa câu / giữa từ / giữa tên / giữa số.
+// Câu quá NGẮN (< MERGE_BELOW) → gộp với câu kế. Câu quá DÀI (> SPLIT_ABOVE) →
+// chỉ chia tại DẤU CÂU thật (; : — phẩy); không có dấu câu thì GIỮ NGUYÊN cả câu
+// (một cảnh hơi dài vẫn an toàn hơn cắt sai chỗ). Còn lại: mỗi câu = 1 cảnh.
+// ============================================================================
+// 👉 3 hằng số dễ chỉnh theo ý bạn:
+const MERGE_BELOW = 30;    // câu ngắn hơn (ký tự) → gộp với câu kế
+const SPLIT_ABOVE = 150;   // câu dài hơn (ký tự) → mới xét chia (tại dấu câu)
+const TARGET_CHARS = 100;  // độ dài đích khi buộc phải chia câu dài
+
+const SENT_DOT = String.fromCharCode(1);               // sentinel che '.' không phải hết câu
+const SENT_COMMA = String.fromCharCode(2);             // sentinel che ',' trong số
+const SENT_BND = String.fromCharCode(0);               // đánh dấu biên câu
+
+// Viết tắt tiếng Việt hay gặp (không kèm dấu chấm, đã thường hóa).
+const VI_ABBREV = ['tp','tt','tx','ts','ths','gs','pgs','bs','ks','kts','cn','nxb','tr','vd','tk','st','ncs','ttx','đ','q','p','f'];
+
+// BƯỚC 1: che dấu chấm/phẩy KHÔNG phải kết thúc câu để chúng không kích hoạt cắt.
+const protectFalseBoundaries = (s: string): string => {
+  // (a) dấu '.'/',' nằm giữa hai chữ số: 1.000.000 · 3,5 · 2.9.1945
+  s = s.replace(/(?<=\d)\.(?=\d)/g, SENT_DOT).replace(/(?<=\d),(?=\d)/g, SENT_COMMA);
+  // (b) 'v.v.' — che cả hai dấu chấm
+  s = s.replace(/(?<!\p{L})v\.v\./giu, m => m.replace(/\./g, SENT_DOT));
+  // (c) viết tắt trong danh sách (Tp. Nxb. GS. TS. ...)
+  const abbrRe = new RegExp('(?<!\\p{L})(?:' + VI_ABBREV.join('|') + ')\\.', 'giu');
+  s = s.replace(abbrRe, m => m.replace(/\./g, SENT_DOT));
+  // (d) chữ cái đầu tên: 1 chữ HOA + '.'  (V. A. Đ.)
+  s = s.replace(/(?<!\p{L})\p{Lu}\./gu, m => m.replace('.', SENT_DOT));
+  return s;
+};
+const restoreProtected = (s: string): string => s.split(SENT_DOT).join('.').split(SENT_COMMA).join(',');
+
+// BƯỚC 3: tách một đoạn (đã che, đã gộp khoảng trắng) thành các câu thật.
+// Nuốt dấu đóng ngoặc kép/ngoặc sau dấu kết thúc: '...tự do." Cả dân tộc...'
+const splitIntoSentences = (para: string): string[] => {
+  const marked = para.replace(/([.!?…]+[”’"')\]»]*)(?=\s)/gu, '$1' + SENT_BND);
+  return marked.split(SENT_BND).map(x => x.trim()).filter(Boolean);
+};
+
+// BƯỚC 7: biên câu mà vế trái kết thúc bằng acronym/chữ cái đầu/chữ số → chưa an toàn, gộp về sau.
+const endsUnsafe = (leftText: string): boolean => {
+  const toks = leftText.trim().split(/\s+/);
+  const last = (toks[toks.length - 1] || '').replace(/[”’"')\]».,!?…]+$/u, '');
+  if (/\d$/.test(last)) return true;                   // kết thúc bằng chữ số
+  if (/^\p{Lu}$/u.test(last)) return true;             // 1 chữ hoa (initial)
+  if (/^\p{Lu}{2,4}$/u.test(last)) return true;        // acronym ngắn viết hoa (KTS, TP...)
+  return false;
+};
+
+// BƯỚC 6: chia MỀM một câu quá dài — CHỈ tại dấu câu thật, KHÔNG dùng liên từ.
+// Đo bằng SỐ KÝ TỰ: mỗi mảnh ≤ SPLIT_ABOVE, ưu tiên điểm cắt gần TARGET_CHARS.
+const softSplitLongSentence = (sentence: string): string[] => {
+  const tokens = sentence.split(/\s+/);
+  const pieces: string[] = [];
+  let start = 0;
+  while (start < tokens.length) {
+    const remLen = tokens.slice(start).join(' ').length;
+    if (remLen <= SPLIT_ABOVE) { pieces.push(tokens.slice(start).join(' ')); break; }
+    let bestCut = -1, bestScore = -Infinity, cum = 0;
+    for (let i = start; i < tokens.length - 1; i++) {
+      cum += (i > start ? 1 : 0) + tokens[i].length;    // +1 cho khoảng trắng
+      if (cum > SPLIT_ABOVE) break;
+      const tok = tokens[i];
+      let priority = 0;
+      if (/[;:]$/.test(tok)) priority = 3;
+      else if (/[—–]$/.test(tok)) {                     // gạch dài: né dải số '1930 – 1945'
+        const prevNum = /\d/.test(tokens[i].replace(/[—–]$/, '')) || /\d$/.test(tokens[i - 1] || '');
+        const nextNum = /^\d/.test(tokens[i + 1] || '');
+        if (!(prevNum && nextNum)) priority = 3;
+      } else if (/,$/.test(tok)) priority = 2;          // phẩy thật (phẩy trong số đã bị che)
+      if (priority > 0) {
+        const score = -Math.abs(cum - TARGET_CHARS) + priority * 0.001;
+        if (score > bestScore) { bestScore = score; bestCut = i + 1; }
+      }
+    }
+    if (bestCut === -1) { pieces.push(tokens.slice(start).join(' ')); break; } // không có điểm an toàn → giữ nguyên
+    pieces.push(tokens.slice(start, bestCut).join(' '));
+    start = bestCut;
+  }
+  return pieces;
+};
+
+// logic='default' → cho phép chia mềm câu dài tại dấu câu.
+// logic='sentence' → không bao giờ chia câu (câu dài giữ nguyên thành 1 cảnh).
 const splitScriptByCode = (text: string, logic: string = 'default'): string[] => {
-  if (logic === 'sentence') {
-    const fragments = text.replace(/\s+/g, ' ').trim().split(/(?<=[.!?。]|\.{3}|…)\s+|\n+/);
-    const chunks: string[] = [];
-    let current = "";
-    
-    for (let frag of fragments) {
-      frag = frag.trim();
-      if (!frag) continue;
+  const allowSoftSplit = logic !== 'sentence';
 
-      current = current ? current + " " + frag : frag;
-
-      if (current.length >= 60) {
-        chunks.push(current);
-        current = "";
-      }
-    }
-    
-    if (current) {
-      if (chunks.length > 0 && current.length < 60) {
-        chunks[chunks.length - 1] += " " + current;
-      } else {
-        chunks.push(current);
-      }
-    }
-    return chunks.filter(c => c.replace(/[^a-zA-Z0-9\u00C0-\u1EF9]/g, '').length > 0);
+  const prot = protectFalseBoundaries(text);
+  const paragraphs = prot.split(/\n+/);                 // BƯỚC 2: xuống dòng = biên cứng
+  const sentences: string[] = [];
+  for (const para of paragraphs) {
+    const clean = para.replace(/[^\S\n]+/g, ' ').trim();
+    if (!clean) continue;
+    for (const s of splitIntoSentences(clean)) sentences.push(s);
   }
 
-  const fragments = text.replace(/\s+/g, ' ').trim().split(/(?<=[.!?。])\s+|\n+/);
+  // BƯỚC 7: gộp câu mà vế trước kết thúc "không an toàn" (viết tắt lạ / số / initial).
+  const safeSentences: string[] = [];
+  for (const s of sentences) {
+    if (safeSentences.length && endsUnsafe(safeSentences[safeSentences.length - 1])) safeSentences[safeSentences.length - 1] += ' ' + s;
+    else safeSentences.push(s);
+  }
+
+  // BƯỚC 5: đóng gói — mỗi câu = 1 cảnh; câu < MERGE_BELOW gộp tiếp vào câu sau
+  // (gộp LẶP cho tới khi đủ dài); câu > SPLIT_ABOVE thì chia mềm tại dấu câu.
   const chunks: string[] = [];
-  let current = "";
-  for (let frag of fragments) {
-    frag = frag.trim();
-    if (!frag) continue;
-    if (frag.length > 140) {
-      if (current) { chunks.push(current); current = ""; }
-      let remaining = frag;
-      while (remaining.length > 140) {
-        let targetPoint = Math.floor(remaining.length / 2);
-        if (targetPoint > 80) targetPoint = 75; 
-        let cutIndex = -1;
-        for (let i = 0; i < 30; i++) {
-          if (targetPoint + i < remaining.length && [',', ';', ':', '-', '—'].includes(remaining[targetPoint + i])) { cutIndex = targetPoint + i + 1; break; }
-          if (targetPoint - i > 0 && [',', ';', ':', '-', '—'].includes(remaining[targetPoint - i])) { cutIndex = targetPoint - i + 1; break; }
-        }
-        if (cutIndex === -1) {
-          for (let i = 0; i < 30; i++) {
-            if (targetPoint + i < remaining.length && remaining[targetPoint + i] === ' ') { cutIndex = targetPoint + i; break; }
-            if (targetPoint - i > 0 && remaining[targetPoint - i] === ' ') { cutIndex = targetPoint - i; break; }
-          }
-        }
-        if (cutIndex === -1) cutIndex = 75;
-        chunks.push(remaining.substring(0, cutIndex).trim());
-        remaining = remaining.substring(cutIndex).trim();
-      }
-      if (remaining) current = remaining; 
-      continue;
-    }
-    if (!current) { current = frag; } else {
-      if (current.length < 40) { if (current.length + frag.length + 1 <= 120) { current += " " + frag; } else { chunks.push(current); current = frag; } } 
-      else { chunks.push(current); current = frag; }
+  let carry = '';
+  for (const raw of safeSentences) {
+    const s = carry ? carry + ' ' + raw : raw;
+    carry = '';
+    if (s.length < MERGE_BELOW) { carry = s; continue; }  // vẫn ngắn → gộp tiếp câu sau
+    if (allowSoftSplit && s.length > SPLIT_ABOVE) {
+      for (const p of softSplitLongSentence(s)) chunks.push(p);
+    } else {
+      chunks.push(s);
     }
   }
-  if (current) chunks.push(current);
-  return chunks.filter(c => c.replace(/[^a-zA-Z0-9\u00C0-\u1EF9]/g, '').length > 0);
+  // Câu ngắn còn sót ở CUỐI (không có câu sau) → gộp ngược vào cảnh trước.
+  if (carry) {
+    if (chunks.length) chunks[chunks.length - 1] += ' ' + carry;
+    else chunks.push(carry);
+  }
+
+  return chunks.map(restoreProtected).filter(c => c.replace(/[^a-zA-Z0-9À-ỹ]/g, '').length > 0);
 };
 
 const SCENE_SCHEMA = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.INTEGER }, visualDescription: { type: Type.STRING }, characterDetails: { type: Type.STRING }, settingTime: { type: Type.STRING }, duration: { type: Type.STRING, enum: ["8s"] } }, required: ["id", "visualDescription", "characterDetails", "settingTime", "duration"] } };
@@ -381,12 +443,12 @@ const PROMPT_SCHEMA = {
     type: Type.OBJECT,
     properties: {
       sceneId: { type: Type.INTEGER },
-      shot: { type: Type.STRING, description: "Shot size + angle + lens + DOF. e.g. 'Wide low-angle tracking shot, 35mm anamorphic, shallow depth of field'" },
-      narrative: { type: Type.STRING, description: "One flowing paragraph. Introduce each character with their VERBATIM_BLOCK inline (first mention only), then describe their actions — all woven together naturally. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) steps through the doorway as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) rises from his chair to greet her; Cecily Alderton pauses, Adrian Ashbourne extends a gloved hand.' Do NOT list all characters first then write actions separately." },
-      expression: { type: Type.STRING, description: "Facial expression / emotional beat per character. Empty string if no person on screen." },
-      setting: { type: Type.STRING, description: "Environment, period, weather, time of day, props in frame." },
-      lighting: { type: Type.STRING, description: "Light direction, color temperature, contrast, key/fill/rim, named scheme." },
-      camera_motion: { type: Type.STRING, description: "Camera movement through the 8 seconds." },
+      shot: { type: Type.STRING, description: "Shot size + neutral angle + lens + DOF, Medium/Wide preferred. e.g. 'Static medium-wide eye-level shot, 35mm, moderate depth of field'. Never a tight close-up on hands." },
+      narrative: { type: Type.STRING, description: "One flowing paragraph. Introduce each character with their VERBATIM_BLOCK inline (first mention only), then give each ONE simple, stable action — woven together naturally. Keep actions calm and single (standing, sitting, looking, slowly turning, gently stirring); no fast or intricate motion. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) stands quietly by the window as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) sits calmly at the desk, gaze lifting toward Cecily Alderton.' Do NOT list all characters first then write actions separately." },
+      expression: { type: Type.STRING, description: "Subtle facial expression / emotional beat per character. Empty string if no person on screen." },
+      setting: { type: Type.STRING, description: "Environment, period, weather, time of day, props in frame, plus any gentle environmental motion (smoke, steam, candle flicker, wind)." },
+      lighting: { type: Type.STRING, description: "Light direction, color temperature, contrast, key/fill/rim, named scheme. Prefer soft over hard light." },
+      camera_motion: { type: Type.STRING, description: "LOCKED camera: 'static lock-off' by default, or at most ONE single very slow push-in / pull-back. Never orbit, crane, tracking, handheld, whip pan, zoom, or drone." },
       style_tail: { type: Type.STRING, description: "Style summary + quality anchors. MUST end with the exact phrase: Rendered in the style of <styleSummary>." },
       _validation_subjects: { type: Type.STRING, description: "Comma-separated list of every CANONICAL_NAME that appears in this scene. Used for internal validation only." }
     },
@@ -394,16 +456,41 @@ const PROMPT_SCHEMA = {
   }
 };
 
-const CINEMATOGRAPHY_GLOSSARY = `=== CINEMATOGRAPHY GLOSSARY (pick vocabulary ONLY from these lists) ===
-SHOT_SIZES: Extreme Close-Up (ECU), Close-Up (CU), Medium Close-Up (MCU), Medium Shot (MS), Medium Long Shot (MLS), Long Shot (LS), Wide Shot (WS), Extreme Long Shot (ELS), Over-the-Shoulder (OTS), Two-Shot, Insert, Cutaway, POV.
-ANGLES: eye-level, low-angle, high-angle, Dutch tilt, overhead / bird's-eye, worm's-eye, profile, three-quarter front, three-quarter back.
-LENSES: 14mm ultra-wide, 24mm wide, 35mm normal, 50mm standard, 85mm portrait, 135mm tele, 200mm long-tele, anamorphic 1.33x, anamorphic 2x, macro, fisheye.
-DOF: shallow depth of field, deep focus, rack focus, bokeh-rich, split focus.
-CAMERA_MOTION: static lock-off, slow dolly-in, dolly-out, lateral tracking left, lateral tracking right, crane up, crane down, jib, handheld sway, Steadicam glide, gimbal smooth, whip pan, push-in, pull-back, orbit clockwise, orbit counter-clockwise, POV walking, drone aerial, parallax pass-by, slow zoom-in, slow zoom-out.
-LIGHTING_SCHEMES: high-key, low-key, chiaroscuro, Rembrandt, three-point, motivated practical, golden hour 5500K, blue hour 10000K, tungsten 3200K, daylight 5600K, neon, candlelight, moonlight, hard direct, soft diffused, rim/back light, kicker, fill, hair light, top light, side light, underlight.
-COMPOSITION: rule of thirds, centered framing, leading lines, symmetrical, negative space, foreground/midground/background layering, frame within a frame, depth cues.
-EMOTION_TAGS: contemplative, resolute, anxious, tender, furious, melancholic, awed, defiant, sorrowful, jubilant, suspicious, tender half-smile, narrowed eyes, parted lips, clenched jaw, watery eyes, knitted brow.
+// 👉 TỪ VỰNG STOCK-SAFE: cố tình tiết chế. Ưu tiên medium/wide + camera tĩnh (tối đa
+// 1 push-in/pull-back chậm) để tránh artifact. KHÔNG còn ECU/close-up bàn tay, KHÔNG
+// còn orbit/crane/whip pan/handheld — đây là các nguồn gây lỗi thừa chi, méo tay, morph.
+const CINEMATOGRAPHY_GLOSSARY = `=== STOCK-SAFE VISUAL GLOSSARY (pick vocabulary ONLY from these lists) ===
+SHOT_SIZES (prefer the safe ones — Medium/Wide): Wide Shot (WS), Medium Long Shot (MLS), Medium Shot (MS), Long Shot (LS), Extreme Long Shot (ELS), establishing shot. AVOID close framing on people; NEVER frame tight on hands.
+ANGLES (keep neutral): eye-level, slight low-angle, slight high-angle, straight-on / frontal, three-quarter front. AVOID Dutch tilt, worm's-eye, extreme overhead.
+LENSES: 24mm wide, 35mm normal, 50mm standard. (Long tele / macro / fisheye NOT used — they exaggerate distortion.)
+DOF: moderate depth of field, deep focus. (No rack focus, no split focus.)
+CAMERA_MOTION (LOCKED — choose ONE): static lock-off (DEFAULT, preferred) OR one single very slow push-in OR one single very slow pull-back. Nothing else — no dolly-sideways, tracking, crane, jib, handheld, gimbal, orbit, whip pan, zoom, drone, POV.
+ENVIRONMENTAL_MOTION (use this INSTEAD of body motion to keep the shot alive): drifting smoke, rising steam, flickering candle/firelight, wind stirring fabric or grass, falling dust motes, gentle ripples on water, slow-drifting clouds, embers floating.
+LIGHTING_SCHEMES: soft diffused daylight, golden hour 5500K, overcast soft light, candlelight, motivated practical, Rembrandt, rim/back light, side light, top light. Prefer SOFT over hard light (hard light exaggerates artifacts).
+COMPOSITION: rule of thirds, centered framing, symmetrical, negative space, leading lines, foreground/midground/background layering, depth cues.
+EMOTION_TAGS: contemplative, resolute, calm, solemn, tender, melancholic, awed, weary, watchful, faint smile, steady gaze, softened brow. (Keep expressions subtle and natural.)
 === END GLOSSARY ===`;
+
+// 👉 QUY TẮC CHỐNG LỖI (ưu tiên #1 cho video sạch, không thừa chi/méo tay/quái dị).
+// Đặt TRÊN cả yếu tố điện ảnh: thà đơn giản mà sạch còn hơn đẹp mà lỗi.
+const ANTI_ARTIFACT_RULE = `=== ANTI-ARTIFACT RULE (CRITICAL — HIGHEST PRIORITY, ABOVE ANY CINEMATIC FLAIR) ===
+GOAL: clean, error-free footage for historical B-roll / stock replacement. A simple clean shot ALWAYS beats a fancy shot that risks warped anatomy. Cinematic beauty is SECONDARY to being artifact-free.
+
+DO:
+- Prefer Medium/Wide framing on people so bodies and hands stay small and stable.
+- Give each person ONE single simple action, or a still, stable pose (standing, sitting, looking, slowly turning the head, gently stirring, slowly walking).
+- Keep hands relaxed, low-detail, or out of tight framing. NEVER stage intricate finger work / counting / complex object manipulation in close view.
+- Keep the number of people LOW and interaction MINIMAL. If several people are present, they mostly stand/sit calmly; no tangled group action.
+- Prefer OBJECTS and ENVIRONMENTS as the subject when possible (props, landscapes, food, tools, architecture) — they morph far less than human bodies.
+- Keep the shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) rather than complex body motion.
+
+AVOID (these are the top causes of AI artifacts):
+- Tight close-ups of hands or faces performing detailed motion.
+- Fast movement, running, fighting, dancing, sudden gestures (cause jelly/morphing).
+- Crowds and dense multi-person interaction (faces and limbs merge).
+- Elaborate armor/costume with heavy fine detail in close framing.
+- Any camera move beyond a single very slow push-in / pull-back.
+=== END ANTI-ARTIFACT RULE ===`;
 
 // 👉 QUY TẮC LÕI: Mỗi cảnh 8 giây CHỈ được là MỘT khoảnh khắc liên tục, MỘT bối cảnh,
 // MỘT hành động đơn. Nếu một câu thoại/đoạn văn chứa nhiều ý, nhiều địa điểm hoặc nhiều
@@ -423,7 +510,7 @@ HARD BANS (these break the video):
 - NO chaining of separate actions. The subject performs ONE clear action that can plausibly happen in 8 continuous seconds.
 - NO scene cuts of any kind.
 
-The camera may move (dolly, pan, orbit, etc.) but stays on the SAME continuous moment in the SAME place. Multiple characters interacting in the SAME place at the SAME time is allowed — that is still one moment.
+The camera stays essentially LOCKED. It is either fully static (locked-off) or performs at most ONE single very slow push-in or pull-back — never orbit, crane, whip pan, handheld, or any fast/complex move. It stays on the SAME continuous moment in the SAME place. Multiple characters present in the SAME place at the SAME time is allowed, but they hold simple stable poses — that is still one moment.
 === END SINGLE-MOMENT RULE ===`;
 
 // 👉 QUY TẮC AN TOÀN: TUYỆT ĐỐI không để tên người nổi tiếng / người thật ngoài đời
@@ -721,6 +808,9 @@ ${CELEBRITY_SAFETY_RULE}
 ${SINGLE_MOMENT_RULE}
 Apply this to the 'narrative', 'setting' and 'camera_motion' fields: depict ONLY the single selected moment. If the input scene text implies several locations or actions, pick the one most important moment and write the prompt for that alone — silently drop the rest.
 
+${ANTI_ARTIFACT_RULE}
+Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, keep the camera locked, and lean on environmental motion. Being artifact-free outranks looking cinematic.
+
 CONTEXT: ${globalContext}
 
 COLOR GRADING: ${colorMoodDesc}
@@ -734,10 +824,10 @@ ${charProfiles}
 === END DICTIONARY ===
 
 NARRATIVE RULE — how to write the 'narrative' field when characters are present:
-The 'narrative' is ONE flowing paragraph. It must weave character descriptions and actions together naturally — NOT list all characters first and actions after.
+The 'narrative' is ONE flowing paragraph. It must weave each character's VERBATIM_BLOCK together with ONE simple, stable action each — NOT list all characters first and actions after. Keep every action calm and single (standing, sitting, looking, slowly turning the head, gently holding an object). No fast, intricate, or multi-step motion. Interaction between people stays minimal.
 
 PATTERN:
-  "[Character A VERBATIM_BLOCK] [does action A], while [Character B VERBATIM_BLOCK] [does action B]; [Character A bare name] [continues action]."
+  "[Character A VERBATIM_BLOCK] [holds one simple pose / does one calm action], while [Character B VERBATIM_BLOCK] [holds one simple pose / does one calm action]; [Character A bare name] [keeps that single quiet action]."
 
 HOW TO EMBED VERBATIM_BLOCK:
   - Take the exact string from the VERBATIM_BLOCK field in the Character Dictionary (the string inside the quotes "...").
@@ -745,21 +835,23 @@ HOW TO EMBED VERBATIM_BLOCK:
   - Do NOT add, remove, or rephrase any word. Copy it character-for-character.
   - Second and later mentions of the same character: use only the bare CANONICAL_NAME — no pronoun, no generic noun.
 
-EXAMPLE (3-character scene, follow this narrative pattern):
+EXAMPLE (3-character scene, follow this narrative pattern — note the calm, single actions):
   Dictionary:
     CANONICAL_NAME="Edmund", VERBATIM_BLOCK: "Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat)"
     CANONICAL_NAME="Lady Whitmore", VERBATIM_BLOCK: "Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker)"
     CANONICAL_NAME="Clara", VERBATIM_BLOCK: "Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown)"
 
-  ✅ CORRECT narrative:
-    "Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat) stands fixed in the foreground with formal stillness, gaze drifting past Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker) as she presents social compliments toward Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown); midway through the shot Edmund shifts Edmund's gaze toward the ballroom center, ending with Clara held in polite proximity while Edmund's attention drifts elsewhere."
+  ✅ CORRECT narrative (medium-wide, everyone calm and mostly still):
+    "In a medium-wide framing, Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat) stands quietly at the left with a steady, formal posture, while Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker) sits composed in an armchair and Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown) stands near the window; Edmund slowly turns Edmund's head toward the room's center as candle flames flicker and dust drifts in the soft light."
 
   ❌ WRONG (all descriptions first, actions after):
-    "Edmund (distinguished lord). Lady Whitmore (stately matriarch). Clara (slender woman). Edmund remains fixed in the foreground... Lady Whitmore presents compliments... Clara stands nearby."
+    "Edmund (distinguished lord). Lady Whitmore (stately matriarch). Clara (slender woman). Edmund stands... Lady Whitmore sits... Clara waits."
   ❌ WRONG (shortened VERBATIM_BLOCK):
-    "Edmund (English lord in navy tailcoat) stands fixed..."  — missing age, hair, jaw, frame.
+    "Edmund (English lord in navy tailcoat) stands..."  — missing age, hair, jaw, frame.
   ❌ WRONG (pronoun used):
-    "Edmund stands fixed. He shifts his gaze..." — must be "Edmund shifts Edmund's gaze".
+    "Edmund stands. He turns his head..." — must be "Edmund slowly turns Edmund's head".
+  ❌ WRONG (busy / fast / intricate action):
+    "Edmund strides across the hall gesturing sharply while Clara hurriedly counts coins in close-up." — too much motion, tight hand work → artifacts.
 
 ABSOLUTE NAMING RULES:
 A. Every CANONICAL_NAME in _validation_subjects MUST appear in 'narrative' at least once with its full VERBATIM_BLOCK on first mention.
@@ -768,7 +860,7 @@ C. After first mention: bare CANONICAL_NAME only. NEVER pronouns (he/she/they/hi
 D. If input has REQUIRED_FULL_DESCRIPTIONS, every string there must appear verbatim inside 'narrative'.
 ` : `
 NARRATIVE RULE (no listed characters):
-Write a dense, motion-driven paragraph describing the main subject and action unfolding over 8 seconds. Introduce the subject with full visual detail on first mention.
+Write a calm, single-subject paragraph describing ONE main subject (prefer an object, prop, or environment) held in a stable shot over 8 seconds. Introduce the subject with full visual detail on first mention. Keep it alive with environmental motion (smoke, steam, wind, ripples, flickering light) rather than complex action.
 `}
 
 ABSOLUTE MANDATORY RULES:
@@ -778,15 +870,17 @@ ABSOLUTE MANDATORY RULES:
 3. STYLE TAIL must end exactly with: "Rendered in the style of ${finalStyleStr}."
 4. 'lighting' must integrate the COLOR GRADING listed above.
 5. No word "cut" anywhere. No location change, no time jump, no second action — ONE continuous moment only (see SINGLE-MOMENT RULE).
-6. CINEMATIC LANGUAGE: pull vocabulary from the GLOSSARY. Generic phrasing is rejected.
-${options?.audioMode !== 'keep' ? '7. ZERO-AUDIO: NO dialogue, quotes, text on screen, voiceovers, sound descriptions. Describe ONLY visuals.' : ''}
-DENSITY: narrative has no character limit — VERBATIM_BLOCKs must be preserved in full. Other fields: 1-3 tight sentences each.`;
+6. ARTIFACT-FREE OVER CINEMATIC: obey the ANTI-ARTIFACT RULE first. Pull vocabulary from the STOCK-SAFE GLOSSARY; keep framing Medium/Wide, camera locked, actions simple. Never trade safety for flair.
+${options?.audioMode !== 'keep' ? '7. AMBIENT-ONLY AUDIO: describe ONLY visuals. No dialogue, quotes, on-screen text, voiceover. If sound is implied, treat it as quiet ambient environmental sound only — no dialogue, no music.' : ''}
+DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays lean — one calm action per subject, no padding. Other fields: 1-3 tight sentences each.`;
 
   const PROMPT_BATCH_SIZE = 5;
   const batches: Scene[][] = [];
   for (let i = 0; i < segment.scenes.length; i += PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + PROMPT_BATCH_SIZE));
 
-  const NEGATIVE_TAIL = "Avoid text overlays, watermarks, captions, warped anatomy, extra fingers, distorted faces, morphing limbs, oversaturated colors, plastic skin, uncanny eyes.";
+  // 👉 Cue KHẲNG ĐỊNH (consistent anatomy...) đặt trước, rồi mới tới danh sách phủ định
+  // NGẮN & CỤ THỂ nhắm đúng lỗi hay gặp — theo đúng cách VEO 3 phản hồi tốt nhất.
+  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, oversaturated colors, plastic skin, text, watermark, caption.";
 
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');

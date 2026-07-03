@@ -5,8 +5,7 @@ const Header: React.FC = () => {
   const [isKeyManagerOpen, setIsKeyManagerOpen] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [keyCount, setKeyCount] = useState(0);
-  const [expiryDate, setExpiryDate] = useState<string | null>(null);
-  
+
   const [provider, setProvider] = useState<string>('gemini');
   const [isProviderDropdownOpen, setIsProviderDropdownOpen] = useState(false);
   const [providersState, setProvidersState] = useState<Record<string, ProviderConfig>>(AI_PROVIDERS);
@@ -42,17 +41,6 @@ const Header: React.FC = () => {
         setKeyInput(savedKeys.join('\n\n')); 
         setKeyCount(savedKeys.length);
         if (savedKeys.length > 0) setIsAgreed(true);
-    }
-
-    const exp = localStorage.getItem('app1_license_expiry');
-    if (exp) {
-      // 👉 SỬA ĐỔI: Phân biệt hạn sử dụng vĩnh viễn
-      if (exp === '-1') {
-        setExpiryDate('∞ Vĩnh viễn');
-      } else {
-        const date = new Date(parseInt(exp));
-        setExpiryDate(date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }));
-      }
     }
 
     const handleClickOutside = (event: MouseEvent) => {
@@ -175,13 +163,8 @@ const Header: React.FC = () => {
                 <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400 tracking-tight">
                   VEO 3 ENTERPRISE
                 </h1>
-                {expiryDate && (
-                  <span className="px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold rounded-full shadow-sm">
-                    ⏳ Hạn dùng: {expiryDate}
-                  </span>
-                )}
               </div>
-              <p className="text-xs text-slate-400 font-medium">Bản quyền phần mềm chính hãng</p>
+              <p className="text-xs text-slate-400 font-medium">Bản nội bộ</p>
             </div>
           </div>
 
