@@ -307,71 +307,142 @@ const callAISafe = async <T>(contents: any, systemInstruction: string | undefine
   return await callGeminiSafe<T>(contents, systemInstruction, schema, providerConfig.model, temperature, limiter, providerId);
 };
 
+// ============================================================================
+// 👉 CẮT CẢNH AN TOÀN CHO AUTO-SYNC GIỌNG ĐỌC
+// Nguyên tắc: ranh giới cảnh LUÔN là biên câu thật (. ! ? … + xuống dòng) — nơi
+// giọng đọc có ngắt. KHÔNG BAO GIỜ cắt giữa câu / giữa từ / giữa tên / giữa số.
+// Câu quá ngắn → gộp tới ngân sách ~8s. Câu quá dài → chỉ chia tại DẤU CÂU thật
+// (; : — phẩy); nếu không có thì GIỮ NGUYÊN cả câu (an toàn hơn cắt sai).
+// ============================================================================
+// 👉 Chỉ cần chỉnh MỘT hằng số này theo tốc độ đọc thực tế của giọng đọc.
+const SYLL_PER_SEC = 5.0;                              // âm tiết/giây (giọng đọc tốc độ vừa)
+const TARGET_SYLL = Math.round(8 * SYLL_PER_SEC);      // mục tiêu ~8s / cảnh
+const MAX_SYLL = Math.round(11 * SYLL_PER_SEC);        // trần: vượt mới xét chia câu dài
+const MIN_SYLL = Math.round(3 * SYLL_PER_SEC);         // sàn: dưới mức này thì cố gộp thêm
+
+const SENT_DOT = String.fromCharCode(1);               // sentinel che '.' không phải hết câu
+const SENT_COMMA = String.fromCharCode(2);             // sentinel che ',' trong số
+const SENT_BND = String.fromCharCode(0);               // đánh dấu biên câu
+
+// Viết tắt tiếng Việt hay gặp (không kèm dấu chấm, đã thường hóa).
+const VI_ABBREV = ['tp','tt','tx','ts','ths','gs','pgs','bs','ks','kts','cn','nxb','tr','vd','tk','st','ncs','ttx','đ','q','p','f'];
+
+// BƯỚC 1: che dấu chấm/phẩy KHÔNG phải kết thúc câu để chúng không kích hoạt cắt.
+const protectFalseBoundaries = (s: string): string => {
+  // (a) dấu '.'/',' nằm giữa hai chữ số: 1.000.000 · 3,5 · 2.9.1945
+  s = s.replace(/(?<=\d)\.(?=\d)/g, SENT_DOT).replace(/(?<=\d),(?=\d)/g, SENT_COMMA);
+  // (b) 'v.v.' — che cả hai dấu chấm
+  s = s.replace(/(?<!\p{L})v\.v\./giu, m => m.replace(/\./g, SENT_DOT));
+  // (c) viết tắt trong danh sách (Tp. Nxb. GS. TS. ...)
+  const abbrRe = new RegExp('(?<!\\p{L})(?:' + VI_ABBREV.join('|') + ')\\.', 'giu');
+  s = s.replace(abbrRe, m => m.replace(/\./g, SENT_DOT));
+  // (d) chữ cái đầu tên: 1 chữ HOA + '.'  (V. A. Đ.)
+  s = s.replace(/(?<!\p{L})\p{Lu}\./gu, m => m.replace('.', SENT_DOT));
+  return s;
+};
+const restoreProtected = (s: string): string => s.split(SENT_DOT).join('.').split(SENT_COMMA).join(',');
+
+// Ước lượng số âm tiết NÓI: token có chữ số ~ số chữ số (năm 1945 ≈ 4); còn lại ~ 1.
+const spokenSyll = (tok: string): number => {
+  const digits = (tok.match(/\d/g) || []).length;
+  return digits > 0 ? Math.max(1, digits) : 1;
+};
+const syllCount = (s: string): number => {
+  const toks = s.trim().match(/\S+/g);
+  return toks ? toks.reduce((a, t) => a + spokenSyll(t), 0) : 0;
+};
+
+// BƯỚC 3: tách một đoạn (đã che, đã gộp khoảng trắng) thành các câu thật.
+// Nuốt dấu đóng ngoặc kép/ngoặc sau dấu kết thúc: '...tự do." Cả dân tộc...'
+const splitIntoSentences = (para: string): string[] => {
+  const marked = para.replace(/([.!?…]+[”’"')\]»]*)(?=\s)/gu, '$1' + SENT_BND);
+  return marked.split(SENT_BND).map(x => x.trim()).filter(Boolean);
+};
+
+// BƯỚC 7: biên câu mà vế trái kết thúc bằng acronym/chữ cái đầu/chữ số → chưa an toàn, gộp về sau.
+const endsUnsafe = (leftText: string): boolean => {
+  const toks = leftText.trim().split(/\s+/);
+  const last = (toks[toks.length - 1] || '').replace(/[”’"')\]».,!?…]+$/u, '');
+  if (/\d$/.test(last)) return true;                   // kết thúc bằng chữ số
+  if (/^\p{Lu}$/u.test(last)) return true;             // 1 chữ hoa (initial)
+  if (/^\p{Lu}{2,4}$/u.test(last)) return true;        // acronym ngắn viết hoa (KTS, TP...)
+  return false;
+};
+
+// BƯỚC 6: chia MỀM một câu quá dài — CHỈ tại dấu câu thật, KHÔNG dùng liên từ.
+const softSplitLongSentence = (sentence: string): string[] => {
+  const tokens = sentence.split(/\s+/);
+  const pieces: string[] = [];
+  let start = 0;
+  while (start < tokens.length) {
+    let remSyll = 0;
+    for (let k = start; k < tokens.length; k++) remSyll += spokenSyll(tokens[k]);
+    if (remSyll <= MAX_SYLL) { pieces.push(tokens.slice(start).join(' ')); break; }
+    let bestCut = -1, bestScore = -Infinity, cum = 0;
+    for (let i = start; i < tokens.length - 1; i++) {
+      cum += spokenSyll(tokens[i]);
+      if (cum > MAX_SYLL) break;
+      const tok = tokens[i];
+      let priority = 0;
+      if (/[;:]$/.test(tok)) priority = 3;
+      else if (/[—–]$/.test(tok)) {                     // gạch dài: né dải số '1930 – 1945'
+        const prevNum = /\d/.test(tokens[i].replace(/[—–]$/, '')) || /\d$/.test(tokens[i - 1] || '');
+        const nextNum = /^\d/.test(tokens[i + 1] || '');
+        if (!(prevNum && nextNum)) priority = 3;
+      } else if (/,$/.test(tok)) priority = 2;          // phẩy thật (phẩy trong số đã bị che)
+      if (priority > 0) {
+        const score = -Math.abs(cum - TARGET_SYLL) + priority * 0.001;
+        if (score > bestScore) { bestScore = score; bestCut = i + 1; }
+      }
+    }
+    if (bestCut === -1) { pieces.push(tokens.slice(start).join(' ')); break; } // không có điểm an toàn → giữ nguyên
+    pieces.push(tokens.slice(start, bestCut).join(' '));
+    start = bestCut;
+  }
+  return pieces;
+};
+
+// logic='default' → cho phép chia mềm câu dài tại dấu câu.
+// logic='sentence' → không bao giờ chia câu (câu dài giữ nguyên thành 1 cảnh).
 const splitScriptByCode = (text: string, logic: string = 'default'): string[] => {
-  if (logic === 'sentence') {
-    const fragments = text.replace(/\s+/g, ' ').trim().split(/(?<=[.!?。]|\.{3}|…)\s+|\n+/);
-    const chunks: string[] = [];
-    let current = "";
-    
-    for (let frag of fragments) {
-      frag = frag.trim();
-      if (!frag) continue;
+  const allowSoftSplit = logic !== 'sentence';
 
-      current = current ? current + " " + frag : frag;
-
-      if (current.length >= 60) {
-        chunks.push(current);
-        current = "";
-      }
-    }
-    
-    if (current) {
-      if (chunks.length > 0 && current.length < 60) {
-        chunks[chunks.length - 1] += " " + current;
-      } else {
-        chunks.push(current);
-      }
-    }
-    return chunks.filter(c => c.replace(/[^a-zA-Z0-9\u00C0-\u1EF9]/g, '').length > 0);
+  const prot = protectFalseBoundaries(text);
+  const paragraphs = prot.split(/\n+/);                 // BƯỚC 2: xuống dòng = biên cứng
+  const sentences: string[] = [];
+  for (const para of paragraphs) {
+    const clean = para.replace(/[^\S\n]+/g, ' ').trim();
+    if (!clean) continue;
+    for (const s of splitIntoSentences(clean)) sentences.push(s);
   }
 
-  const fragments = text.replace(/\s+/g, ' ').trim().split(/(?<=[.!?。])\s+|\n+/);
+  // BƯỚC 7: gộp câu mà vế trước kết thúc "không an toàn" (viết tắt lạ / số / initial).
+  const safeSentences: string[] = [];
+  for (const s of sentences) {
+    if (safeSentences.length && endsUnsafe(safeSentences[safeSentences.length - 1])) safeSentences[safeSentences.length - 1] += ' ' + s;
+    else safeSentences.push(s);
+  }
+
+  // BƯỚC 5: đóng gói câu trọn vẹn theo ngân sách âm tiết.
   const chunks: string[] = [];
-  let current = "";
-  for (let frag of fragments) {
-    frag = frag.trim();
-    if (!frag) continue;
-    if (frag.length > 140) {
-      if (current) { chunks.push(current); current = ""; }
-      let remaining = frag;
-      while (remaining.length > 140) {
-        let targetPoint = Math.floor(remaining.length / 2);
-        if (targetPoint > 80) targetPoint = 75; 
-        let cutIndex = -1;
-        for (let i = 0; i < 30; i++) {
-          if (targetPoint + i < remaining.length && [',', ';', ':', '-', '—'].includes(remaining[targetPoint + i])) { cutIndex = targetPoint + i + 1; break; }
-          if (targetPoint - i > 0 && [',', ';', ':', '-', '—'].includes(remaining[targetPoint - i])) { cutIndex = targetPoint - i + 1; break; }
-        }
-        if (cutIndex === -1) {
-          for (let i = 0; i < 30; i++) {
-            if (targetPoint + i < remaining.length && remaining[targetPoint + i] === ' ') { cutIndex = targetPoint + i; break; }
-            if (targetPoint - i > 0 && remaining[targetPoint - i] === ' ') { cutIndex = targetPoint - i; break; }
-          }
-        }
-        if (cutIndex === -1) cutIndex = 75;
-        chunks.push(remaining.substring(0, cutIndex).trim());
-        remaining = remaining.substring(cutIndex).trim();
-      }
-      if (remaining) current = remaining; 
+  let current = '';
+  const flush = () => { if (current.trim()) chunks.push(current.trim()); current = ''; };
+  for (const sentence of safeSentences) {
+    const sSyll = syllCount(sentence);
+    if (sSyll > MAX_SYLL) {                             // câu quá dài
+      flush();
+      if (allowSoftSplit) for (const p of softSplitLongSentence(sentence)) chunks.push(p);
+      else chunks.push(sentence);
       continue;
     }
-    if (!current) { current = frag; } else {
-      if (current.length < 40) { if (current.length + frag.length + 1 <= 120) { current += " " + frag; } else { chunks.push(current); current = frag; } } 
-      else { chunks.push(current); current = frag; }
-    }
+    if (!current) { current = sentence; continue; }
+    const combined = syllCount(current) + sSyll;
+    if (combined <= TARGET_SYLL || (syllCount(current) < MIN_SYLL && combined <= MAX_SYLL)) current += ' ' + sentence;
+    else { flush(); current = sentence; }
   }
-  if (current) chunks.push(current);
-  return chunks.filter(c => c.replace(/[^a-zA-Z0-9\u00C0-\u1EF9]/g, '').length > 0);
+  flush();
+
+  return chunks.map(restoreProtected).filter(c => c.replace(/[^a-zA-Z0-9À-ỹ]/g, '').length > 0);
 };
 
 const SCENE_SCHEMA = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.INTEGER }, visualDescription: { type: Type.STRING }, characterDetails: { type: Type.STRING }, settingTime: { type: Type.STRING }, duration: { type: Type.STRING, enum: ["8s"] } }, required: ["id", "visualDescription", "characterDetails", "settingTime", "duration"] } };
