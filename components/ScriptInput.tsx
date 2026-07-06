@@ -26,7 +26,7 @@ interface ScriptInputProps {
   onAnalyzeStyle: (base64: string, mimeType: string) => Promise<void>;
   isAnalyzingStyle: boolean;
   characters: CharacterIdentity[];
-  onUpdateCharacter: (id: string, field: 'name' | 'promptName' | 'visualDescription' | 'ethnicity' | 'clothing', val: string) => void;
+  onUpdateCharacter: (id: string, field: 'name' | 'promptName' | 'originalName' | 'visualDescription' | 'ethnicity' | 'clothing', val: string) => void;
   onAddCharacter: () => void;
   onRemoveCharacter: (id: string) => void;
   onReset: () => void; 
@@ -164,12 +164,25 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
                       <label className="text-[10px] uppercase font-bold text-amber-500 tracking-widest mb-1 block">
                         Tên Đưa Vào Prompt
                       </label>
-                      <input 
+                      <input
                         value={char.promptName || ''}
                         onChange={(e) => onUpdateCharacter(char.id, 'promptName', e.target.value)}
                         placeholder="Ghi tên nhân vật bạn muốn thêm vào prompt..."
                         className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 w-full placeholder-slate-600 font-mono"
                       />
+                    </div>
+
+                    <div className="mb-3 bg-red-500/5 border border-red-500/20 p-2 rounded-lg">
+                      <label className="text-[10px] uppercase font-bold text-red-400/90 tracking-widest mb-1 block">
+                        🚫 Tên Thật (Sẽ Bị Chặn Khỏi Prompt)
+                      </label>
+                      <input
+                        value={char.originalName || ''}
+                        onChange={(e) => onUpdateCharacter(char.id, 'originalName', e.target.value)}
+                        placeholder="Tên người thật trong kịch bản (nếu có)..."
+                        className="bg-slate-950 border border-slate-800 rounded-md px-2 py-1.5 text-xs text-red-300 focus:outline-none focus:border-red-500/50 w-full placeholder-slate-600 font-mono"
+                      />
+                      <p className="text-[9px] text-slate-500 mt-1 leading-tight">Hệ thống tự động thay mọi lần xuất hiện của tên này bằng "Tên Đưa Vào Prompt".</p>
                     </div>
                     
                     <div className="grid grid-cols-2 gap-2 mb-2">

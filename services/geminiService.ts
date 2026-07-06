@@ -610,6 +610,104 @@ const buildCharacterIndex = (characters: CharacterIdentity[]) => {
   }).filter(c => c.canonical);
 };
 
+// ============================================================================
+// 👉 BỘ LỌC TÊN NGƯỜI THẬT (TẤT ĐỊNH — không phụ thuộc AI tự giác tuân thủ)
+// Find-replace mọi lần xuất hiện của originalName (tên thật) → tên hư cấu
+// (promptName). Khớp không phân biệt HOA/thường và KHÔNG DẤU ("Son Tung" vẫn
+// bắt được dù danh bạ ghi "Sơn Tùng"), có biên từ để không phá từ khác, tên
+// đầy đủ được ưu tiên trước token lẻ. Được gọi ở MỌI cửa ra của pipeline.
+// ============================================================================
+const foldChar = (ch: string): string => {
+  if (ch === 'đ' || ch === 'Đ') return 'd';
+  return ch.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+};
+const foldText = (s: string): string => { let out = ''; for (const ch of s) out += foldChar(ch); return out; };
+// fold kèm bản đồ vị trí folded → vị trí gốc, để thay đúng chỗ trên chuỗi gốc.
+const foldWithMap = (s: string): { folded: string; map: number[] } => {
+  let folded = ''; const map: number[] = [];
+  for (let i = 0; i < s.length; i++) {
+    const f = foldChar(s[i]);
+    for (const fc of f) { folded += fc; map.push(i); }
+  }
+  return { folded, map };
+};
+const isWordCh = (ch: string): boolean => !!ch && /[\p{L}\p{N}]/u.test(ch);
+
+// Token quá phổ biến trong tên → không dùng đơn lẻ làm needle (tránh thay nhầm từ thường).
+const NAME_TOKEN_STOP = new Set(['van', 'thi', 'the', 'von', 'der', 'de', 'la', 'le', 'di', 'da', 'mac', 'and', 'of']);
+
+// Token trông như MỘT âm tiết tiếng Việt (đã fold) → trùng từ thường quá dễ ("minh",
+// "quang", "thanh"...), không dùng đơn lẻ. Tên nước ngoài ("ronaldo", "trump", "messi")
+// không khớp mẫu này nên vẫn được bắt khi đứng riêng.
+const VN_SYLLABLE_RE = /^(?:b|c|ch|d|g|gh|gi|h|k|kh|l|m|n|ng|ngh|nh|p|ph|q|qu|r|s|t|th|tr|v|x)?[aeiouy]+(?:c|ch|m|n|ng|nh|p|t)?$/;
+
+// Kiểm tra tên (đã fold) xuất hiện trong chuỗi (đã fold) với biên từ.
+const containsFoldedName = (foldedHaystack: string, name: string): boolean => {
+  const needle = foldText(name.trim());
+  if (needle.length < 2) return false;
+  let idx = foldedHaystack.indexOf(needle);
+  while (idx !== -1) {
+    const before = idx > 0 ? foldedHaystack[idx - 1] : '';
+    const after = foldedHaystack[idx + needle.length] || '';
+    if (!isWordCh(before) && !isWordCh(after)) return true;
+    idx = foldedHaystack.indexOf(needle, idx + 1);
+  }
+  return false;
+};
+
+const scrubRealNames = (text: string, characters: CharacterIdentity[]): string => {
+  if (!text || !characters || characters.length === 0) return text;
+  const entries: { canonical: string; needles: string[] }[] = [];
+  for (const c of characters) {
+    const canonical = (c.promptName?.trim() || c.name?.trim() || '');
+    const orig = (c.originalName || '').trim();
+    if (!canonical || !orig) continue;
+    if (foldText(orig) === foldText(canonical)) continue;   // tên thay trùng tên gốc → không thay được gì
+    const needles = new Set<string>([foldText(orig)]);
+    const toks = orig.split(/\s+/).map(t => foldText(t.replace(/[^\p{L}\p{N}]/gu, ''))).filter(Boolean);
+    // Cụm ≥2 từ LIÊN TIẾP của tên (bắt cách gọi tắt "Son Tung", "Chí Minh"...) — đủ đặc trưng để an toàn.
+    for (let a = 0; a < toks.length; a++) {
+      for (let b = a + 2; b <= toks.length; b++) needles.add(toks.slice(a, b).join(' '));
+    }
+    // Token ĐƠN chỉ khi ≥4 ký tự, không phải từ đệm, và KHÔNG có dạng âm tiết tiếng Việt
+    // (để "Ronaldo"/"Trump" đứng riêng vẫn bị thay, nhưng "minh"/"quang" trong từ thường thì không).
+    for (const clean of toks) {
+      if (clean.length >= 4 && !NAME_TOKEN_STOP.has(clean) && !VN_SYLLABLE_RE.test(clean)) needles.add(clean);
+    }
+    entries.push({ canonical, needles: Array.from(needles) });
+  }
+  if (entries.length === 0) return text;
+
+  const { folded, map } = foldWithMap(text);
+  const matches: { start: number; end: number; canonical: string }[] = [];
+  for (const e of entries) {
+    for (const needle of e.needles) {
+      if (needle.length < 2) continue;
+      let idx = folded.indexOf(needle);
+      while (idx !== -1) {
+        const before = idx > 0 ? folded[idx - 1] : '';
+        const after = folded[idx + needle.length] || '';
+        if (!isWordCh(before) && !isWordCh(after)) matches.push({ start: idx, end: idx + needle.length, canonical: e.canonical });
+        idx = folded.indexOf(needle, idx + 1);
+      }
+    }
+  }
+  if (matches.length === 0) return text;
+  // Chồng lấn: tên đầy đủ (dài hơn) thắng token lẻ; thay từ cuối về đầu để giữ nguyên index.
+  matches.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  const kept: typeof matches = [];
+  let lastEnd = -1;
+  for (const m of matches) { if (m.start >= lastEnd) { kept.push(m); lastEnd = m.end; } }
+  let out = text;
+  for (let k = kept.length - 1; k >= 0; k--) {
+    const m = kept[k];
+    const oStart = map[m.start];
+    const oEnd = map[m.end - 1] + 1;
+    out = out.slice(0, oStart) + m.canonical + out.slice(oEnd);
+  }
+  return out;
+};
+
 export const extractContextAndCharacters = async (rawScript: string): Promise<{ context: string; characters: CharacterIdentity[] }> => {
   if (!rawScript || rawScript.trim().length === 0) return { context: "", characters: [] };
   try {
@@ -629,13 +727,33 @@ CRITICAL RULES:
 4. "visualDescription" MUST follow this exact formula if details exist: "[Age/Gender/Species], [Body Type/Build], [Hair/Coat/Skin], [Key Features]". Keep it as a concise comma-separated list. If completely undefined, leave it EMPTY "".
 5. For "ethnicity" and "clothing", extract strictly from the script. If NOT explicitly mentioned, leave the string EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
-      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING } }, required: ["name", "promptName", "visualDescription"] } } }, required: ["context", "characters"] },
-      0.4, limitSceneConcurrency); 
+      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING } }, required: ["name", "promptName", "originalName", "visualDescription"] } } }, required: ["context", "characters"] },
+      0.4, limitSceneConcurrency);
     updateUsageStats({ scripts: 1 });
-    return { context: result.context || "", characters: (result.characters || []).map((c: any, index: number) => ({ id: `char-${index}-${Date.now()}`, ...c })) };
-  } catch (e: any) { 
+
+    const rawChars: CharacterIdentity[] = (result.characters || []).map((c: any, index: number) => ({ id: `char-${index}-${Date.now()}`, ...c }));
+    // 👉 CHỐNG ĐẢO TÊN: nếu AI lỡ đặt TÊN THẬT vào promptName (trùng originalName) thì
+    // lưới chặn tự vô hiệu và validator còn BẮT BUỘC tên thật xuất hiện trong prompt.
+    // → tự sinh một tên hư cấu trung tính thay thế.
+    const SUBSTITUTE_NAMES = ['Marcus Vale', 'Elena Hart', 'Adrian Cole', 'Nora Quinn', 'Julian Reed', 'Mira Sandoval', 'Victor Lane', 'Selene Brooks'];
+    let subIdx = 0;
+    const characters = rawChars.map(c => {
+      const orig = (c.originalName || '').trim();
+      const pn = (c.promptName || '').trim();
+      if (orig && pn && foldText(orig) === foldText(pn)) {
+        return { ...c, promptName: SUBSTITUTE_NAMES[subIdx++ % SUBSTITUTE_NAMES.length] };
+      }
+      return c;
+    });
+    // 👉 Lọc tên thật khỏi globalContext — context này được bơm vào MỌI system prompt
+    // phía sau, để nguyên tên thật là mồi cho AI lặp lại nó ở từng cảnh.
+    const context = scrubRealNames(result.context || "", characters);
+    return { context, characters };
+  } catch (e: any) {
     if (e.message.includes("MISSING_") || e.message.includes("[LỖI CẤU HÌNH]")) throw e;
-    return { context: "", characters: [] }; 
+    // 👉 Không nuốt lỗi trong im lặng nữa: trước đây trả {context:"", characters:[]} khiến
+    // App ghi đè danh bạ nhân vật bằng rỗng mà người dùng không biết → lưới chặn tê liệt.
+    throw new Error(`Trích xuất bối cảnh & nhân vật thất bại: ${e.message || e}`);
   }
 };
 
@@ -683,9 +801,9 @@ ${charProfiles}
 CHARACTER MAPPING — MANDATORY:
 1. PRONOUN RESOLUTION: For every pronoun in the chunk (he/she/it/they/him/her/hắn/nó/cô ấy/anh ấy/ông ấy/bà ấy/người này/người đó), determine which character from the Directory it refers to using the CONTEXT. Do NOT leave any pronoun unresolved.
 2. NAME REPLACEMENT: Replace every reference to a Directory character (by ALIAS_IN_SCRIPT, by pronoun, or by generic noun) with the CANONICAL_NAME from the Directory.
-3. FULL TRAITS INJECTION: In the 'visualDescription' AND 'characterDetails' fields, on the FIRST mention of each character that appears in the chunk, paste the FULL_DESCRIPTION_BLOCK exactly as shown between >>> and <<<. Do NOT shorten, paraphrase, summarize, or drop any clause. Copy verbatim.
-4. ZERO-HALLUCINATION: Do not invent actions or details not present in the chunk. Only map names/pronouns and inject the Directory's FULL_DESCRIPTION_BLOCK.
-5. characterDetails MUST list every Directory character present in the chunk, each one written as its FULL_DESCRIPTION_BLOCK verbatim.` : ''}
+3. FULL TRAITS INJECTION: In the 'visualDescription' AND 'characterDetails' fields, on the FIRST mention of each character that appears in the chunk, paste that character's VERBATIM_BLOCK from the Directory (the exact string inside the quotes after VERBATIM_BLOCK:). Do NOT shorten, paraphrase, summarize, or drop any clause. Copy verbatim.
+4. ZERO-HALLUCINATION: Do not invent actions or details not present in the chunk. Only map names/pronouns and inject the Directory's VERBATIM_BLOCK.
+5. characterDetails MUST list every Directory character present in the chunk, each one written as its VERBATIM_BLOCK verbatim.` : ''}
 
 CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The 'id' in your JSON must exactly match the [ID: X] provided. DO NOT CHANGE THE TEXT.`;
 
@@ -694,11 +812,12 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
         const successfulIds: number[] = [];
         
         for (const res of aiResults) {
-          const idx = res.id - 1; 
+          const idx = res.id - 1;
           if (pendingIndices.includes(idx)) {
-            validScenes[idx].visualDescription = res.visualDescription || "";
-            validScenes[idx].characterDetails = res.characterDetails || "Contextual characters";
-            validScenes[idx].settingTime = res.settingTime || "Contextual setting";
+            // 👉 Lọc tên thật ngay tại cửa nhập — nếu AI quên luật, code vẫn thay tất định.
+            validScenes[idx].visualDescription = scrubRealNames(res.visualDescription || "", characters);
+            validScenes[idx].characterDetails = scrubRealNames(res.characterDetails || "Contextual characters", characters);
+            validScenes[idx].settingTime = scrubRealNames(res.settingTime || "Contextual setting", characters);
             if (validScenes[idx].visualDescription !== "") {
                successfulIds.push(idx);
             }
@@ -768,9 +887,9 @@ ${charProfiles}
 CHARACTER MAPPING — MANDATORY:
 1. PRONOUN RESOLUTION: For every pronoun in the chunk (he/she/it/they/him/her/hắn/nó/cô ấy/anh ấy/ông ấy/bà ấy/người này/người đó), determine which character from the Directory it refers to using the CONTEXT. Do NOT leave any pronoun unresolved.
 2. NAME REPLACEMENT: Replace every reference to a Directory character (by ALIAS_IN_SCRIPT, by pronoun, or by generic noun) with the CANONICAL_NAME from the Directory.
-3. FULL TRAITS INJECTION: In the 'visualDescription' AND 'characterDetails' fields, on the FIRST mention of each character that appears in the chunk, paste the FULL_DESCRIPTION_BLOCK exactly as shown between >>> and <<<. Do NOT shorten, paraphrase, summarize, or drop any clause. Copy verbatim.
-4. ZERO-HALLUCINATION: Do not invent actions or details not present in the chunk. Only map names/pronouns and inject the Directory's FULL_DESCRIPTION_BLOCK.
-5. characterDetails MUST list every Directory character present in the chunk, each one written as its FULL_DESCRIPTION_BLOCK verbatim.` : ''}
+3. FULL TRAITS INJECTION: In the 'visualDescription' AND 'characterDetails' fields, on the FIRST mention of each character that appears in the chunk, paste that character's VERBATIM_BLOCK from the Directory (the exact string inside the quotes after VERBATIM_BLOCK:). Do NOT shorten, paraphrase, summarize, or drop any clause. Copy verbatim.
+4. ZERO-HALLUCINATION: Do not invent actions or details not present in the chunk. Only map names/pronouns and inject the Directory's VERBATIM_BLOCK.
+5. characterDetails MUST list every Directory character present in the chunk, each one written as its VERBATIM_BLOCK verbatim.` : ''}
 
 CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' must exactly match the [ID: X] provided. DO NOT CHANGE THE TEXT.`;
 
@@ -783,9 +902,10 @@ CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' mus
               if (scene && res.visualDescription) {
                   results.push({
                       ...scene,
-                      visualDescription: res.visualDescription,
-                      characterDetails: res.characterDetails || "Contextual characters",
-                      settingTime: res.settingTime || "Contextual setting"
+                      // 👉 Lọc tên thật ngay tại cửa nhập của luồng vá cảnh (trước đây không kiểm tra gì).
+                      visualDescription: scrubRealNames(res.visualDescription, characters),
+                      characterDetails: scrubRealNames(res.characterDetails || "Contextual characters", characters),
+                      settingTime: scrubRealNames(res.settingTime || "Contextual setting", characters)
                   });
                   successIds.push(res.id);
               }
@@ -945,10 +1065,11 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
       charIndex.forEach(c => { charByCanonical[c.canonical] = c; });
 
       const detectPresentChars = (s: Scene): string[] => {
-        const haystack = `${s.sourceText || ''} ${s.visualDescription || ''} ${s.characterDetails || ''}`.toLowerCase();
+        // 👉 So khớp KHÔNG DẤU để không bỏ sót khi AI viết tên kiểu romanized ("Son Tung").
+        const haystack = foldText(`${s.sourceText || ''} ${s.visualDescription || ''} ${s.characterDetails || ''}`);
         const required = new Set<string>();
         for (const c of charIndex) {
-          if ((c.aliasLower && haystack.includes(c.aliasLower)) || (c.promptLower && haystack.includes(c.promptLower)) || (c.originalLower && haystack.includes(c.originalLower))) {
+          if ((c.aliasLower && haystack.includes(foldText(c.aliasLower))) || (c.promptLower && haystack.includes(foldText(c.promptLower))) || (c.originalLower && haystack.includes(foldText(c.originalLower)))) {
             required.add(c.canonical);
           }
         }
@@ -972,8 +1093,10 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
       const validateNameAndRichness = (promptText: string, requiredNames: string[]): { ok: boolean; reason: string } => {
         const lower = promptText.toLowerCase();
         // LƯỚI CHẶN CỨNG: nếu tên thật (originalName, khác với tên hư cấu) lọt vào prompt → loại, tạo lại.
+        // 👉 So khớp KHÔNG DẤU + biên từ (bắt cả "Son Tung" khi danh bạ ghi "Sơn Tùng"), bỏ giới hạn ≥4 ký tự.
+        const foldedPrompt = foldText(promptText);
         for (const c of charIndex) {
-          if (c.originalLower && c.originalLower.length >= 4 && c.originalLower !== c.canonical.toLowerCase() && lower.includes(c.originalLower)) {
+          if (c.originalLower && foldText(c.originalLower) !== foldText(c.canonical) && containsFoldedName(foldedPrompt, c.originalLower)) {
             return { ok: false, reason: `leaked real name "${c.originalLower}" — must use canonical "${c.canonical}"` };
           }
         }
@@ -1015,6 +1138,10 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
                finalPromptStr += ", " + suffix;
            }
         }
+        // 👉 CHỐT CHẶN CUỐI (tất định): mọi đường ra — vòng batch, vòng 3 lọt lưới,
+        // cứu hộ từng cảnh, fallback copy Bước 2 — đều đi qua đây. Lọc SAU khi ghép
+        // suffix để cả suffix người dùng gõ cũng được quét.
+        finalPromptStr = scrubRealNames(finalPromptStr, characters);
         validItems.push({
           sceneId: scene.id,
           sourceText: scene.sourceText,
