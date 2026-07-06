@@ -18,6 +18,9 @@ export interface CharacterIdentity {
   // 👉 Tên/định danh y như trong kịch bản gốc (với người nổi tiếng đây là TÊN THẬT).
   // CHỈ dùng nội bộ để map & thay thế (redaction) — KHÔNG BAO GIỜ xuất ra prompt/video.
   originalName?: string;
+  // 👉 true = người thật/nhân vật lịch sử có thật → promptName bị cưỡng chế thành
+  // DANH XƯNG dạng "the ..." (không thể trùng tên khai sinh của bất kỳ ai).
+  isRealPerson?: boolean;
   visualDescription: string;
   ethnicity?: string;
   clothing?: string;

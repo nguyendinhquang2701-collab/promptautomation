@@ -551,7 +551,8 @@ const CELEBRITY_SAFETY_RULE = `=== REAL-PERSON / CELEBRITY NAME SAFETY (CRITICAL
 Using the real name of an actual public figure violates content policy. This applies to politicians, musicians, actors, athletes, influencers, royalty, real historical people, and brand mascots tied to a real person.
 
 RULES:
-1. If a character is (or is named after) a REAL public figure, NEVER output their real name. Replace it with a NEUTRAL, INVENTED fictional name (e.g. "Marcus Vale", "Elena Hart"). Keep the substitution CONSISTENT — the same real person always maps to the same invented name everywhere.
+1. If a character is (or is named after) a REAL public figure, NEVER output their real name. Replace it with a DESCRIPTIVE EPITHET — a capitalized role/appearance label starting with "the", e.g. "the Silver-Bearded Statesman", "the Young Striker", "the Iron-Willed General". Build it from the person's role and look. Keep the substitution CONSISTENT — the same real person always maps to the same epithet everywhere.
+1b. NEVER substitute with another human-sounding name (e.g. "Marcus Vale", "John Smith") — ANY invented personal name can accidentally match another real person. An epithet ("the ...") can never be somebody's legal name, so it is the ONLY safe form.
 2. The PHYSICAL DESCRIPTION (age, build, hair, skin, distinguishing features, clothing) of that person IS allowed and SHOULD be kept — convey the likeness through description, never through the name.
 3. Purely fictional / original characters invented by the script keep their original name unchanged.
 4. Never let a real public figure's name appear in ANY output field (names, narrative, setting, context, dialogue references). If such a name appears in the source text and is not a directory character, replace it with a generic descriptor (e.g. "a famous singer") — never the real name.
@@ -582,7 +583,7 @@ const buildCharacterProfiles = (characters: CharacterIdentity[]): string => {
   VERBATIM_BLOCK: "${fullBlock}"
   RULE: Whenever this character appears (by CANONICAL_NAME, by ALIAS_IN_SCRIPT,${needsRedact ? ' by ORIGINAL_REFERENCE,' : ''} or by any pronoun he/she/it/they/him/her/hắn/nó/cô ấy/anh ấy/ông ấy/bà ấy):
     - FIRST mention → copy the string after VERBATIM_BLOCK: including every word, every comma. Do NOT shorten, paraphrase, summarize, or drop any adjective. Embed this string naturally inside the sentence at the point the character is introduced.
-    - SUBSEQUENT mentions → write bare CANONICAL_NAME "${targetName}" only. Never use a pronoun or generic noun ("the man", "the woman", "the figure", "the warrior").`;
+    - SUBSEQUENT mentions → write bare CANONICAL_NAME "${targetName}" only. Never use a pronoun or a DIFFERENT generic noun ("the man", "the woman", "the figure", "the warrior"). Note: the CANONICAL_NAME itself may be a descriptive epithet (e.g. "the Silver-Bearded Statesman") — that exact epithet IS the name; copy it verbatim, never shorten or vary it.`;
   }).join('\n\n');
 };
 
@@ -720,30 +721,34 @@ export const extractContextAndCharacters = async (rawScript: string): Promise<{ 
 ${CELEBRITY_SAFETY_RULE}
 
 CRITICAL RULES:
-1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put an INVENTED neutral fictional name here instead of the real name, and capture the person's recognizable look in "visualDescription".
+1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put a DESCRIPTIVE EPITHET here instead — a role/appearance label starting with "the" (e.g. "the Silver-Bearded Statesman", "the Young Striker"), NEVER another human-sounding name (any invented personal name can accidentally match a different real person). Capture the person's recognizable look in "visualDescription".
 1b. Put into "originalName" the exact name/reference EXACTLY as it literally appears in the script (for a real public figure, this is their REAL name). This field is used ONLY internally to find-and-replace that reference; it will never be shown. If the script gives no explicit name, leave it EMPTY "".
+1c. Set "isRealPerson" to true if the character is (or is named after / clearly depicts) a REAL public figure or real historical person; set false for purely fictional/original characters.
 2. Put a safe, generic role alias in the "name" field (e.g., "The Protagonist", "The Horse", "The Villain").
 3. ZERO-HALLUCINATION (CRITICAL): Extract ONLY physical traits explicitly mentioned or strongly implied in the script. DO NOT invent details like hair color or age if they are missing from the text.
 4. "visualDescription" MUST follow this exact formula if details exist: "[Age/Gender/Species], [Body Type/Build], [Hair/Coat/Skin], [Key Features]". Keep it as a concise comma-separated list. If completely undefined, leave it EMPTY "".
 5. For "ethnicity" and "clothing", extract strictly from the script. If NOT explicitly mentioned, leave the string EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
-      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING } }, required: ["name", "promptName", "originalName", "visualDescription"] } } }, required: ["context", "characters"] },
+      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
       0.4, limitSceneConcurrency);
     updateUsageStats({ scripts: 1 });
 
     const rawChars: CharacterIdentity[] = (result.characters || []).map((c: any, index: number) => ({ id: `char-${index}-${Date.now()}`, ...c }));
-    // 👉 CHỐNG ĐẢO TÊN: nếu AI lỡ đặt TÊN THẬT vào promptName (trùng originalName) thì
-    // lưới chặn tự vô hiệu và validator còn BẮT BUỘC tên thật xuất hiện trong prompt.
-    // → tự sinh một tên hư cấu trung tính thay thế.
-    const SUBSTITUTE_NAMES = ['Marcus Vale', 'Elena Hart', 'Adrian Cole', 'Nora Quinn', 'Julian Reed', 'Mira Sandoval', 'Victor Lane', 'Selene Brooks'];
+    // 👉 CƯỠNG CHẾ DANH XƯNG cho NGƯỜI THẬT (isRealPerson=true): mọi tên người tự bịa
+    // ("Marcus Vale"...) đều CÓ THỂ vô tình trùng một người nổi tiếng khác. Chỉ DANH XƯNG
+    // MÔ TẢ dạng "the ..." (the Silver-Bearded Statesman) là chắc chắn không phải tên
+    // khai sinh của ai. Nhân vật HƯ CẤU giữ nguyên tên gốc — không đụng tới.
+    const EPITHET_POOL = ['the Distinguished Elder', 'the Stern Commander', 'the Young Scholar', 'the Weathered Voyager', 'the Quiet Strategist', 'the Bold Vanguard', 'the Learned Chronicler', 'the Steadfast Guardian', 'the Silver-Haired Orator', 'the Resolute Pioneer'];
+    const isEpithet = (s: string) => /^the\s+\p{L}/iu.test(s.trim());
     let subIdx = 0;
     const characters = rawChars.map(c => {
+      if (!c.isRealPerson) return c;                       // hư cấu → giữ nguyên tên gốc
       const orig = (c.originalName || '').trim();
       const pn = (c.promptName || '').trim();
-      if (orig && pn && foldText(orig) === foldText(pn)) {
-        return { ...c, promptName: SUBSTITUTE_NAMES[subIdx++ % SUBSTITUTE_NAMES.length] };
-      }
-      return c;
+      if (pn && isEpithet(pn) && foldText(pn) !== foldText(orig)) return c;  // đã là danh xưng chuẩn
+      // promptName đang là TÊN NGƯỜI (nhiều khả năng chính là tên thật) → dồn nó vào
+      // originalName (nếu chỗ đó trống) để bộ lọc scrub bắt được, rồi gán danh xưng.
+      return { ...c, originalName: orig || pn, promptName: EPITHET_POOL[subIdx++ % EPITHET_POOL.length] };
     });
     // 👉 Lọc tên thật khỏi globalContext — context này được bơm vào MỌI system prompt
     // phía sau, để nguyên tên thật là mồi cho AI lặp lại nó ở từng cảnh.
@@ -1006,7 +1011,7 @@ EXAMPLE (3-character scene, follow this narrative pattern — note the calm, sin
 ABSOLUTE NAMING RULES:
 A. Every CANONICAL_NAME in _validation_subjects MUST appear in 'narrative' at least once with its full VERBATIM_BLOCK on first mention.
 B. VERBATIM_BLOCK must be copied exactly — every word, every comma. No shortening.
-C. After first mention: bare CANONICAL_NAME only. NEVER pronouns (he/she/they/him/her/hắn/nó/cô ấy/anh ấy) or generic nouns ("the man", "the woman", "the figure").
+C. After first mention: bare CANONICAL_NAME only. NEVER pronouns (he/she/they/him/her/hắn/nó/cô ấy/anh ấy) or DIFFERENT generic nouns ("the man", "the woman", "the figure"). A CANONICAL_NAME that is itself an epithet (e.g. "the Silver-Bearded Statesman") is the character's NAME — repeat it verbatim, never shorten or vary it.
 D. If input has REQUIRED_FULL_DESCRIPTIONS, every string there must appear verbatim inside 'narrative'.
 ` : `
 NARRATIVE RULE (no listed characters):

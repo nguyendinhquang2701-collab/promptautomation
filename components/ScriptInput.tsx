@@ -170,6 +170,7 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
                         placeholder="Ghi tên nhân vật bạn muốn thêm vào prompt..."
                         className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 w-full placeholder-slate-600 font-mono"
                       />
+                      <p className="text-[9px] text-slate-500 mt-1 leading-tight">Nếu là người thật: dùng DANH XƯNG dạng "the ..." (VD: the Silver-Bearded Statesman) — chắc chắn không trùng tên ai.</p>
                     </div>
 
                     <div className="mb-3 bg-red-500/5 border border-red-500/20 p-2 rounded-lg">
