@@ -547,12 +547,27 @@ The camera stays essentially LOCKED. It is either fully static (locked-off) or p
 // (chính trị gia, ca sĩ, diễn viên, vận động viên, người nổi tiếng, nhân vật lịch sử có thật,
 // thương hiệu gắn với người thật...) lọt vào BẤT KỲ khâu nào. Tên phải được thay bằng một
 // tên hư cấu trung tính; chỉ được MÔ TẢ hình dáng/ngoại hình của nhân vật đó, không dùng tên thật.
+// 👉 BỘ MÃ DANH ĐƯỢC DUYỆT để thay tên người thật (danh sách cố định của người dùng),
+// chia theo giới tính & độ tuổi. AI được lệnh chọn từ đây; code cưỡng chế lại lần cuối.
+const CODENAMES = {
+  maleOld:     ['A Khan', 'A Lu', 'A Nam', 'Asen'],
+  maleYoung:   ['A Chen', 'A Cua', 'A Bon'],
+  femaleOld:   ['A Chi', 'Ba Mom', 'Ba Lac'],
+  femaleYoung: ['May Kool', 'May Phuong', 'May Nu'],
+};
+const ALL_CODENAMES = [...CODENAMES.maleOld, ...CODENAMES.maleYoung, ...CODENAMES.femaleOld, ...CODENAMES.femaleYoung];
+
 const CELEBRITY_SAFETY_RULE = `=== REAL-PERSON / CELEBRITY NAME SAFETY (CRITICAL — POLICY) ===
 Using the real name of an actual public figure violates content policy. This applies to politicians, musicians, actors, athletes, influencers, royalty, real historical people, and brand mascots tied to a real person.
 
 RULES:
-1. If a character is (or is named after) a REAL public figure, NEVER output their real name. Replace it with a DESCRIPTIVE EPITHET — a capitalized role/appearance label starting with "the", e.g. "the Silver-Bearded Statesman", "the Young Striker", "the Iron-Willed General". Build it from the person's role and look. Keep the substitution CONSISTENT — the same real person always maps to the same epithet everywhere.
-1b. NEVER substitute with another human-sounding name (e.g. "Marcus Vale", "John Smith") — ANY invented personal name can accidentally match another real person. An epithet ("the ...") can never be somebody's legal name, so it is the ONLY safe form.
+1. If a character is (or is named after) a REAL public figure, NEVER output their real name. Replace it with a CODENAME chosen from the APPROVED LIST below, matched to the person's gender and age (old ≈ 50+):
+   - Male, old: ${CODENAMES.maleOld.join(', ')}
+   - Male, young: ${CODENAMES.maleYoung.join(', ')}
+   - Female, old: ${CODENAMES.femaleOld.join(', ')}
+   - Female, young: ${CODENAMES.femaleYoung.join(', ')}
+   Keep the substitution CONSISTENT — the same real person always maps to the same codename everywhere, and NEVER assign one codename to two different people. If every fitting codename is taken, use a descriptive epithet starting with "the" (e.g. "the Silver-Bearded Statesman") instead.
+1b. NEVER substitute with any other human-sounding name (e.g. "Marcus Vale", "John Smith") — ANY invented personal name can accidentally match another real person. Only the approved codenames above or a "the ..." epithet are safe.
 2. The PHYSICAL DESCRIPTION (age, build, hair, skin, distinguishing features, clothing) of that person IS allowed and SHOULD be kept — convey the likeness through description, never through the name.
 3. Purely fictional / original characters invented by the script keep their original name unchanged.
 4. Never let a real public figure's name appear in ANY output field (names, narrative, setting, context, dialogue references). If such a name appears in the source text and is not a directory character, replace it with a generic descriptor (e.g. "a famous singer") — never the real name.
@@ -721,7 +736,7 @@ export const extractContextAndCharacters = async (rawScript: string): Promise<{ 
 ${CELEBRITY_SAFETY_RULE}
 
 CRITICAL RULES:
-1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put a DESCRIPTIVE EPITHET here instead — a role/appearance label starting with "the" (e.g. "the Silver-Bearded Statesman", "the Young Striker"), NEVER another human-sounding name (any invented personal name can accidentally match a different real person). Capture the person's recognizable look in "visualDescription".
+1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put a CODENAME here chosen from the APPROVED LIST in the REAL-PERSON NAME SAFETY section, matched to the person's gender and age — NEVER another human-sounding name (any invented personal name can accidentally match a different real person). Capture the person's recognizable look in "visualDescription".
 1b. Put into "originalName" the exact name/reference EXACTLY as it literally appears in the script (for a real public figure, this is their REAL name). This field is used ONLY internally to find-and-replace that reference; it will never be shown. If the script gives no explicit name, leave it EMPTY "".
 1c. Set "isRealPerson" to true if the character is (or is named after / clearly depicts) a REAL public figure or real historical person; set false for purely fictional/original characters.
 2. Put a safe, generic role alias in the "name" field (e.g., "The Protagonist", "The Horse", "The Villain").
@@ -734,21 +749,48 @@ Output strictly valid JSON.`,
     updateUsageStats({ scripts: 1 });
 
     const rawChars: CharacterIdentity[] = (result.characters || []).map((c: any, index: number) => ({ id: `char-${index}-${Date.now()}`, ...c }));
-    // 👉 CƯỠNG CHẾ DANH XƯNG cho NGƯỜI THẬT (isRealPerson=true): mọi tên người tự bịa
-    // ("Marcus Vale"...) đều CÓ THỂ vô tình trùng một người nổi tiếng khác. Chỉ DANH XƯNG
-    // MÔ TẢ dạng "the ..." (the Silver-Bearded Statesman) là chắc chắn không phải tên
-    // khai sinh của ai. Nhân vật HƯ CẤU giữ nguyên tên gốc — không đụng tới.
-    const EPITHET_POOL = ['the Distinguished Elder', 'the Stern Commander', 'the Young Scholar', 'the Weathered Voyager', 'the Quiet Strategist', 'the Bold Vanguard', 'the Learned Chronicler', 'the Steadfast Guardian', 'the Silver-Haired Orator', 'the Resolute Pioneer'];
+    // 👉 CƯỠNG CHẾ MÃ DANH cho NGƯỜI THẬT (isRealPerson=true): mọi tên người tự bịa đều
+    // CÓ THỂ vô tình trùng một người nổi tiếng khác. Chỉ chấp nhận: (a) mã danh trong
+    // BỘ ĐƯỢC DUYỆT (CODENAMES), hoặc (b) danh xưng dạng "the ...". Ngoài ra → code tự
+    // gán mã danh đúng nhóm giới tính/tuổi (đọc từ mô tả), không trùng giữa các nhân vật.
+    // Nhân vật HƯ CẤU giữ nguyên tên gốc — không đụng tới.
     const isEpithet = (s: string) => /^the\s+\p{L}/iu.test(s.trim());
-    let subIdx = 0;
+    const usedCodenames = new Set<string>();
+
+    const pickCodename = (c: CharacterIdentity): string => {
+      const info = `${c.name || ''} ${c.visualDescription || ''} ${c.ethnicity || ''} ${c.clothing || ''}`.toLowerCase();
+      const FEMALE_CUES = ['woman', 'female', 'girl', 'lady', 'queen', 'princess', 'empress', 'matriarch', 'nun', 'phụ nữ', 'thiếu nữ', 'cô gái', 'bà lão', 'nữ hoàng', 'công chúa', 'nữ tướng'];
+      const OLD_CUES = ['elderly', 'old', 'aged', 'senior', 'white hair', 'white-haired', 'silver hair', 'gray hair', 'grey hair', 'white beard', 'wrinkl', 'già', 'cao tuổi', 'lớn tuổi', 'trung niên', 'tóc bạc', 'râu bạc'];
+      const YOUNG_CUES = ['young', 'teen', 'youth', 'boy', 'girl', 'trẻ', 'thanh niên', 'thiếu niên', 'thiếu nữ'];
+      const isFemale = FEMALE_CUES.some(k => info.includes(k));
+      const ageMatch = info.match(/(\d{1,3})\s*[- ]?\s*(?:year|years|yr|tuổi)/);
+      let isOld: boolean;
+      if (ageMatch) isOld = parseInt(ageMatch[1], 10) >= 50;
+      else if (OLD_CUES.some(k => info.includes(k))) isOld = true;
+      else if (YOUNG_CUES.some(k => info.includes(k))) isOld = false;
+      else isOld = true;                                   // phim lịch sử: mặc định lớn tuổi
+      const bucket = isFemale ? (isOld ? CODENAMES.femaleOld : CODENAMES.femaleYoung) : (isOld ? CODENAMES.maleOld : CODENAMES.maleYoung);
+      // Chọn mã chưa dùng trong nhóm → hết nhóm thì lấy bất kỳ mã chưa dùng → cùng lắm đánh số.
+      for (const n of bucket) if (!usedCodenames.has(foldText(n))) return n;
+      for (const n of ALL_CODENAMES) if (!usedCodenames.has(foldText(n))) return n;
+      return `${bucket[0]} ${usedCodenames.size + 1}`;
+    };
+
     const characters = rawChars.map(c => {
       if (!c.isRealPerson) return c;                       // hư cấu → giữ nguyên tên gốc
       const orig = (c.originalName || '').trim();
       const pn = (c.promptName || '').trim();
-      if (pn && isEpithet(pn) && foldText(pn) !== foldText(orig)) return c;  // đã là danh xưng chuẩn
+      const pnFold = foldText(pn);
+      const isApprovedCodename = ALL_CODENAMES.some(n => foldText(n) === pnFold);
+      if (pn && pnFold !== foldText(orig) && ((isApprovedCodename && !usedCodenames.has(pnFold)) || isEpithet(pn))) {
+        if (isApprovedCodename) usedCodenames.add(pnFold);
+        return c;                                          // AI đã chọn đúng chuẩn → giữ
+      }
       // promptName đang là TÊN NGƯỜI (nhiều khả năng chính là tên thật) → dồn nó vào
-      // originalName (nếu chỗ đó trống) để bộ lọc scrub bắt được, rồi gán danh xưng.
-      return { ...c, originalName: orig || pn, promptName: EPITHET_POOL[subIdx++ % EPITHET_POOL.length] };
+      // originalName (nếu chỗ đó trống) để bộ lọc scrub bắt được, rồi gán mã danh.
+      const codename = pickCodename(c);
+      usedCodenames.add(foldText(codename));
+      return { ...c, originalName: orig || pn, promptName: codename };
     });
     // 👉 Lọc tên thật khỏi globalContext — context này được bơm vào MỌI system prompt
     // phía sau, để nguyên tên thật là mồi cho AI lặp lại nó ở từng cảnh.
