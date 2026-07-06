@@ -566,7 +566,7 @@ RULES:
    - Male, young: ${CODENAMES.maleYoung.join(', ')}
    - Female, old: ${CODENAMES.femaleOld.join(', ')}
    - Female, young: ${CODENAMES.femaleYoung.join(', ')}
-   Keep the substitution CONSISTENT — the same real person always maps to the same codename everywhere, and NEVER assign one codename to two different people. If every fitting codename is taken, use a descriptive epithet starting with "the" (e.g. "the Silver-Bearded Statesman") instead.
+   Keep the substitution CONSISTENT — the same real person always maps to the same codename everywhere, and NEVER assign one codename to two different people. If every fitting codename is taken, reuse the list IN ORDER with a number suffix: "A Khan 1", "A Lu 2", "A Nam 3", ... — never invent any other name.
 1b. NEVER substitute with any other human-sounding name (e.g. "Marcus Vale", "John Smith") — ANY invented personal name can accidentally match another real person. Only the approved codenames above or a "the ..." epithet are safe.
 2. The PHYSICAL DESCRIPTION (age, build, hair, skin, distinguishing features, clothing) of that person IS allowed and SHOULD be kept — convey the likeness through description, never through the name.
 3. Purely fictional / original characters invented by the script keep their original name unchanged.
@@ -770,10 +770,13 @@ Output strictly valid JSON.`,
       else if (YOUNG_CUES.some(k => info.includes(k))) isOld = false;
       else isOld = true;                                   // phim lịch sử: mặc định lớn tuổi
       const bucket = isFemale ? (isOld ? CODENAMES.femaleOld : CODENAMES.femaleYoung) : (isOld ? CODENAMES.maleOld : CODENAMES.maleYoung);
-      // Chọn mã chưa dùng trong nhóm → hết nhóm thì lấy bất kỳ mã chưa dùng → cùng lắm đánh số.
+      // Chọn mã chưa dùng trong nhóm. Hết nhóm → quay vòng lại NHÓM ĐÓ và đánh số
+      // tăng dần: "A Khan 1", "A Lu 2", "A Nam 3"... (giữ đúng giới tính/độ tuổi).
       for (const n of bucket) if (!usedCodenames.has(foldText(n))) return n;
-      for (const n of ALL_CODENAMES) if (!usedCodenames.has(foldText(n))) return n;
-      return `${bucket[0]} ${usedCodenames.size + 1}`;
+      for (let k = 0; ; k++) {
+        const cand = `${bucket[k % bucket.length]} ${k + 1}`;
+        if (!usedCodenames.has(foldText(cand))) return cand;
+      }
     };
 
     const characters = rawChars.map(c => {
@@ -781,7 +784,9 @@ Output strictly valid JSON.`,
       const orig = (c.originalName || '').trim();
       const pn = (c.promptName || '').trim();
       const pnFold = foldText(pn);
-      const isApprovedCodename = ALL_CODENAMES.some(n => foldText(n) === pnFold);
+      // Mã hợp lệ = tên trong danh sách, CÓ THỂ kèm số đánh thêm ("A Khan 2").
+      const pnBaseFold = foldText(pn.replace(/\s+\d+$/, '').trim());
+      const isApprovedCodename = ALL_CODENAMES.some(n => foldText(n) === pnBaseFold);
       if (pn && pnFold !== foldText(orig) && ((isApprovedCodename && !usedCodenames.has(pnFold)) || isEpithet(pn))) {
         if (isApprovedCodename) usedCodenames.add(pnFold);
         return c;                                          // AI đã chọn đúng chuẩn → giữ
