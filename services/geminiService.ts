@@ -511,16 +511,82 @@ DO:
 - Give each person ONE single simple action, or a still, stable pose (standing, sitting, looking, slowly turning the head, gently stirring, slowly walking).
 - Keep hands relaxed, low-detail, or out of tight framing. NEVER stage intricate finger work / counting / complex object manipulation in close view.
 - Keep the number of people LOW and interaction MINIMAL. If several people are present, they mostly stand/sit calmly; no tangled group action.
-- Prefer OBJECTS and ENVIRONMENTS as the subject when possible (props, landscapes, food, tools, architecture) — they morph far less than human bodies.
-- Keep the shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) rather than complex body motion.
+- PAIR PERSON + OBJECT: when the subject is an object (fruit, tool, product), keep it as the focal anchor but add ONE person gently interacting with it (holding it, reaching for it, placing it down, walking toward it, examining it) at Medium/Wide distance. A frame with a calm person is ALWAYS more watchable than an empty still life.
+- Keep the shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) plus the person's one calm action.
 
 AVOID (these are the top causes of AI artifacts):
 - Tight close-ups of hands or faces performing detailed motion.
 - Fast movement, running, fighting, dancing, sudden gestures (cause jelly/morphing).
-- Crowds and dense multi-person interaction (faces and limbs merge).
+- Dense crowds in sharp focus (faces and limbs merge): at most 3-5 clearly visible people in the foreground; any larger gathering only as soft-focus silhouettes in the background.
 - Elaborate armor/costume with heavy fine detail in close framing.
 - Any camera move beyond a single very slow push-in / pull-back.
 === END ANTI-ARTIFACT RULE ===`;
+
+// 👉 LUẬT KỂ CHUYỆN BẰNG HÌNH: minh họa ĐÚNG nội dung lời bình bằng NGƯỜI + BỐI CẢNH
+// + VẬT THỂ. Không dùng đạo cụ trung gian (bản đồ/giấy tờ/chữ), không để khung hình
+// rỗng, sự kiện bạo lực kể bằng hậu quả CÓ NGƯỜI, đám đông giới hạn 3-5 người rõ nét.
+const STORYTELLING_RULE = `=== VISUAL STORYTELLING RULE (CRITICAL — the viewer must have something REAL to watch) ===
+S1. SHOW THE STORY, NOT PAPERWORK. When the narration mentions a place, activity, statistic or event, depict PEOPLE actually doing that activity in that place and era. NEVER make maps, documents, newspapers, typewriters, ledgers, calendars, archives, books, letters or files the subject of a shot.
+   - "bananas spread to East Africa" → traders unloading banana bunches from a wooden sailing boat at a coastal market — NOT a map with arrows.
+   - "the company owned 42% of the land" → a lone farmer standing tiny before an endless fenced plantation stretching to the horizon — NOT documents or charts.
+   - "a court conviction in 2024" → lawyers in suits walking up modern courthouse steps — NOT a newspaper headline.
+S2. HUMAN PRESENCE. Every scene should include at least ONE person performing ONE calm action tied to the narration (walking, planting, carrying, inspecting, patrolling, standing watch, gazing into the distance). Pure landscape/object shots are allowed ONLY when the narration is explicitly about that place or object — and even then, prefer a human figure somewhere in frame (a distant worker walking between the trees).
+S3. PERSON + OBJECT TOGETHER. When the subject is an object (a fruit, a tool, a product), keep the object as the focal anchor but add a person gently interacting with it: holding it, reaching for it, placing it down, walking toward it, examining it. "A banana on a counter" → "a woman reaches for the banana on the sunlit kitchen counter, cozy kitchen in soft focus behind her".
+S4. SENSITIVE/VIOLENT EVENTS → AFTERMATH WITH PEOPLE, NEVER GORE. Never depict weapons being aimed or fired, fighting, corpses, blood, wounds, graves, skulls, or people in terror. Tell such moments through a calm aftermath that still contains people doing ordinary actions: soldiers slowly patrolling an empty square at dawn, a woman picking up a fallen hat, villagers walking silently past shuttered houses, mourners placing flowers and candles. The frame must never be empty scenery alone.
+S5. CROWD LIMIT. At most 3-5 clearly visible people in the foreground; any larger gathering appears only as soft-focus silhouettes or indistinct shapes in the background. Never describe "thousands of people", "a sea of faces", or a dense packed crowd in sharp focus.
+S6. NO READABLE TEXT. Never show text meant to be read: headlines, labels, dates, calendar pages, signs, screens, typed words. Show the passage of time through nature and light instead (leaves falling, a candle burning down, light shifting across a room, seasons changing outside a window).
+=== END VISUAL STORYTELLING RULE ===`;
+
+// 👉 TỪ KHÓA CẤM trong nội dung cảnh/prompt (giấy tờ, chữ đọc được, bạo lực, đám đông
+// dày đặc) — chốt chặn bằng code: dính là loại và tạo lại (không tin AI tự giác).
+const BANNED_VISUALS: { re: RegExp; label: string }[] = [
+  // Giấy tờ / đạo cụ trung gian
+  { re: /\bmaps?\b/i, label: 'map' },
+  { re: /\bdocuments?\b/i, label: 'document' },
+  { re: /\bnewspapers?\b/i, label: 'newspaper' },
+  { re: /\btypewriters?\b/i, label: 'typewriter' },
+  { re: /\bledgers?\b/i, label: 'ledger' },
+  { re: /\bcalendars?\b/i, label: 'calendar' },
+  { re: /\barchiv/i, label: 'archive' },
+  { re: /\bmanuscripts?\b/i, label: 'manuscript' },
+  { re: /\bpaperwork\b/i, label: 'paperwork' },
+  { re: /\bbooks?\b/i, label: 'book' },
+  { re: /\b(?:flipping|turning)\s+(?:the\s+)?pages?\b|\bpages?\s+flip/i, label: 'page flipping' },
+  // Chữ đọc được
+  { re: /\bheadlines?\b/i, label: 'headline' },
+  { re: /\blabell?ed\s+['"“]/i, label: 'labeled text' },
+  { re: /\b(?:legible|readable)\s+(?:text|words?|letters?)\b/i, label: 'readable text' },
+  { re: /\b(?:text|words?)\s+(?:reads?|reading|visible|appear|forming)\b/i, label: 'visible words' },
+  // Bạo lực / ghê rợn
+  { re: /\bcorpses?\b/i, label: 'corpse' },
+  { re: /\bdead bod/i, label: 'dead body' },
+  { re: /\bblood\b/i, label: 'blood' },
+  { re: /\bmass graves?\b/i, label: 'mass grave' },
+  { re: /\bskulls?\b/i, label: 'skull' },
+  { re: /\bmassacres?\b/i, label: 'massacre' },
+  { re: /\bmachine guns?\b/i, label: 'machine gun' },
+  { re: /\bgunfire\b/i, label: 'gunfire' },
+  { re: /\bopen(?:s|ed|ing)?\s+fire\b/i, label: 'open fire' },
+  { re: /\bfir(?:es?|ing)\s+(?:a\s+|the\s+|his\s+|her\s+|their\s+)?(?:rifles?|guns?|weapons?)\b/i, label: 'firing weapon' },
+  { re: /\baim(?:s|ed|ing)?\s+(?:a\s+|the\s+|his\s+|her\s+|their\s+)?(?:rifles?|guns?|weapons?)/i, label: 'aiming weapon' },
+  { re: /\bbombs?\s+fall/i, label: 'bombs falling' },
+  { re: /\bbombings?\b/i, label: 'bombing' },
+  { re: /\bexplosions?\b/i, label: 'explosion' },
+  { re: /\btortur/i, label: 'torture' },
+  { re: /\bexecutions?\b/i, label: 'execution' },
+  { re: /\bwounded\b/i, label: 'wounded' },
+  { re: /\barmed\s+(?:men|group|fighters|exiles|force)\b/i, label: 'armed men' },
+  { re: /\b(?:rifles?|guns?|weapons?)\s+at the ready\b/i, label: 'weapon at the ready' },
+  // Đám đông dày đặc
+  { re: /\b(?:thousands|hundreds) of (?:people|workers|men|women|strikers|protesters)\b/i, label: 'mass crowd' },
+  { re: /\bsea of faces\b/i, label: 'sea of faces' },
+  { re: /\b(?:dense|packed|massive|large|huge|vast)\s+crowd/i, label: 'dense crowd' },
+];
+const findBannedVisual = (text: string): string | null => {
+  if (!text) return null;
+  for (const b of BANNED_VISUALS) if (b.re.test(text)) return b.label;
+  return null;
+};
 
 // 👉 QUY TẮC LÕI: Mỗi cảnh 8 giây CHỈ được là MỘT khoảnh khắc liên tục, MỘT bối cảnh,
 // MỘT hành động đơn. Nếu một câu thoại/đoạn văn chứa nhiều ý, nhiều địa điểm hoặc nhiều
@@ -547,12 +613,27 @@ The camera stays essentially LOCKED. It is either fully static (locked-off) or p
 // (chính trị gia, ca sĩ, diễn viên, vận động viên, người nổi tiếng, nhân vật lịch sử có thật,
 // thương hiệu gắn với người thật...) lọt vào BẤT KỲ khâu nào. Tên phải được thay bằng một
 // tên hư cấu trung tính; chỉ được MÔ TẢ hình dáng/ngoại hình của nhân vật đó, không dùng tên thật.
+// 👉 BỘ MÃ DANH ĐƯỢC DUYỆT để thay tên người thật (danh sách cố định của người dùng),
+// chia theo giới tính & độ tuổi. AI được lệnh chọn từ đây; code cưỡng chế lại lần cuối.
+const CODENAMES = {
+  maleOld:     ['A Khan', 'A Lu', 'A Nam', 'Asen'],
+  maleYoung:   ['A Chen', 'A Cua', 'A Bon'],
+  femaleOld:   ['A Chi', 'Ba Mom', 'Ba Lac'],
+  femaleYoung: ['May Kool', 'May Phuong', 'May Nu'],
+};
+const ALL_CODENAMES = [...CODENAMES.maleOld, ...CODENAMES.maleYoung, ...CODENAMES.femaleOld, ...CODENAMES.femaleYoung];
+
 const CELEBRITY_SAFETY_RULE = `=== REAL-PERSON / CELEBRITY NAME SAFETY (CRITICAL — POLICY) ===
 Using the real name of an actual public figure violates content policy. This applies to politicians, musicians, actors, athletes, influencers, royalty, real historical people, and brand mascots tied to a real person.
 
 RULES:
-1. If a character is (or is named after) a REAL public figure, NEVER output their real name. Replace it with a DESCRIPTIVE EPITHET — a capitalized role/appearance label starting with "the", e.g. "the Silver-Bearded Statesman", "the Young Striker", "the Iron-Willed General". Build it from the person's role and look. Keep the substitution CONSISTENT — the same real person always maps to the same epithet everywhere.
-1b. NEVER substitute with another human-sounding name (e.g. "Marcus Vale", "John Smith") — ANY invented personal name can accidentally match another real person. An epithet ("the ...") can never be somebody's legal name, so it is the ONLY safe form.
+1. If a character is (or is named after) a REAL public figure, NEVER output their real name. Replace it with a CODENAME chosen from the APPROVED LIST below, matched to the person's gender and age (old ≈ 50+):
+   - Male, old: ${CODENAMES.maleOld.join(', ')}
+   - Male, young: ${CODENAMES.maleYoung.join(', ')}
+   - Female, old: ${CODENAMES.femaleOld.join(', ')}
+   - Female, young: ${CODENAMES.femaleYoung.join(', ')}
+   Keep the substitution CONSISTENT — the same real person always maps to the same codename everywhere, and NEVER assign one codename to two different people. If every fitting codename is taken, reuse the list IN ORDER with a number suffix: "A Khan 1", "A Lu 2", "A Nam 3", ... — never invent any other name.
+1b. NEVER substitute with any other human-sounding name (e.g. "Marcus Vale", "John Smith") — ANY invented personal name can accidentally match another real person. Only the approved codenames above or a "the ..." epithet are safe.
 2. The PHYSICAL DESCRIPTION (age, build, hair, skin, distinguishing features, clothing) of that person IS allowed and SHOULD be kept — convey the likeness through description, never through the name.
 3. Purely fictional / original characters invented by the script keep their original name unchanged.
 4. Never let a real public figure's name appear in ANY output field (names, narrative, setting, context, dialogue references). If such a name appears in the source text and is not a directory character, replace it with a generic descriptor (e.g. "a famous singer") — never the real name.
@@ -721,7 +802,7 @@ export const extractContextAndCharacters = async (rawScript: string): Promise<{ 
 ${CELEBRITY_SAFETY_RULE}
 
 CRITICAL RULES:
-1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put a DESCRIPTIVE EPITHET here instead — a role/appearance label starting with "the" (e.g. "the Silver-Bearded Statesman", "the Young Striker"), NEVER another human-sounding name (any invented personal name can accidentally match a different real person). Capture the person's recognizable look in "visualDescription".
+1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put a CODENAME here chosen from the APPROVED LIST in the REAL-PERSON NAME SAFETY section, matched to the person's gender and age — NEVER another human-sounding name (any invented personal name can accidentally match a different real person). Capture the person's recognizable look in "visualDescription".
 1b. Put into "originalName" the exact name/reference EXACTLY as it literally appears in the script (for a real public figure, this is their REAL name). This field is used ONLY internally to find-and-replace that reference; it will never be shown. If the script gives no explicit name, leave it EMPTY "".
 1c. Set "isRealPerson" to true if the character is (or is named after / clearly depicts) a REAL public figure or real historical person; set false for purely fictional/original characters.
 2. Put a safe, generic role alias in the "name" field (e.g., "The Protagonist", "The Horse", "The Villain").
@@ -734,21 +815,53 @@ Output strictly valid JSON.`,
     updateUsageStats({ scripts: 1 });
 
     const rawChars: CharacterIdentity[] = (result.characters || []).map((c: any, index: number) => ({ id: `char-${index}-${Date.now()}`, ...c }));
-    // 👉 CƯỠNG CHẾ DANH XƯNG cho NGƯỜI THẬT (isRealPerson=true): mọi tên người tự bịa
-    // ("Marcus Vale"...) đều CÓ THỂ vô tình trùng một người nổi tiếng khác. Chỉ DANH XƯNG
-    // MÔ TẢ dạng "the ..." (the Silver-Bearded Statesman) là chắc chắn không phải tên
-    // khai sinh của ai. Nhân vật HƯ CẤU giữ nguyên tên gốc — không đụng tới.
-    const EPITHET_POOL = ['the Distinguished Elder', 'the Stern Commander', 'the Young Scholar', 'the Weathered Voyager', 'the Quiet Strategist', 'the Bold Vanguard', 'the Learned Chronicler', 'the Steadfast Guardian', 'the Silver-Haired Orator', 'the Resolute Pioneer'];
+    // 👉 CƯỠNG CHẾ MÃ DANH cho NGƯỜI THẬT (isRealPerson=true): mọi tên người tự bịa đều
+    // CÓ THỂ vô tình trùng một người nổi tiếng khác. Chỉ chấp nhận: (a) mã danh trong
+    // BỘ ĐƯỢC DUYỆT (CODENAMES), hoặc (b) danh xưng dạng "the ...". Ngoài ra → code tự
+    // gán mã danh đúng nhóm giới tính/tuổi (đọc từ mô tả), không trùng giữa các nhân vật.
+    // Nhân vật HƯ CẤU giữ nguyên tên gốc — không đụng tới.
     const isEpithet = (s: string) => /^the\s+\p{L}/iu.test(s.trim());
-    let subIdx = 0;
+    const usedCodenames = new Set<string>();
+
+    const pickCodename = (c: CharacterIdentity): string => {
+      const info = `${c.name || ''} ${c.visualDescription || ''} ${c.ethnicity || ''} ${c.clothing || ''}`.toLowerCase();
+      const FEMALE_CUES = ['woman', 'female', 'girl', 'lady', 'queen', 'princess', 'empress', 'matriarch', 'nun', 'phụ nữ', 'thiếu nữ', 'cô gái', 'bà lão', 'nữ hoàng', 'công chúa', 'nữ tướng'];
+      const OLD_CUES = ['elderly', 'old', 'aged', 'senior', 'white hair', 'white-haired', 'silver hair', 'gray hair', 'grey hair', 'white beard', 'wrinkl', 'già', 'cao tuổi', 'lớn tuổi', 'trung niên', 'tóc bạc', 'râu bạc'];
+      const YOUNG_CUES = ['young', 'teen', 'youth', 'boy', 'girl', 'trẻ', 'thanh niên', 'thiếu niên', 'thiếu nữ'];
+      const isFemale = FEMALE_CUES.some(k => info.includes(k));
+      const ageMatch = info.match(/(\d{1,3})\s*[- ]?\s*(?:year|years|yr|tuổi)/);
+      let isOld: boolean;
+      if (ageMatch) isOld = parseInt(ageMatch[1], 10) >= 50;
+      else if (OLD_CUES.some(k => info.includes(k))) isOld = true;
+      else if (YOUNG_CUES.some(k => info.includes(k))) isOld = false;
+      else isOld = true;                                   // phim lịch sử: mặc định lớn tuổi
+      const bucket = isFemale ? (isOld ? CODENAMES.femaleOld : CODENAMES.femaleYoung) : (isOld ? CODENAMES.maleOld : CODENAMES.maleYoung);
+      // Chọn mã chưa dùng trong nhóm. Hết nhóm → quay vòng lại NHÓM ĐÓ và đánh số
+      // tăng dần: "A Khan 1", "A Lu 2", "A Nam 3"... (giữ đúng giới tính/độ tuổi).
+      for (const n of bucket) if (!usedCodenames.has(foldText(n))) return n;
+      for (let k = 0; ; k++) {
+        const cand = `${bucket[k % bucket.length]} ${k + 1}`;
+        if (!usedCodenames.has(foldText(cand))) return cand;
+      }
+    };
+
     const characters = rawChars.map(c => {
       if (!c.isRealPerson) return c;                       // hư cấu → giữ nguyên tên gốc
       const orig = (c.originalName || '').trim();
       const pn = (c.promptName || '').trim();
-      if (pn && isEpithet(pn) && foldText(pn) !== foldText(orig)) return c;  // đã là danh xưng chuẩn
+      const pnFold = foldText(pn);
+      // Mã hợp lệ = tên trong danh sách, CÓ THỂ kèm số đánh thêm ("A Khan 2").
+      const pnBaseFold = foldText(pn.replace(/\s+\d+$/, '').trim());
+      const isApprovedCodename = ALL_CODENAMES.some(n => foldText(n) === pnBaseFold);
+      if (pn && pnFold !== foldText(orig) && ((isApprovedCodename && !usedCodenames.has(pnFold)) || isEpithet(pn))) {
+        if (isApprovedCodename) usedCodenames.add(pnFold);
+        return c;                                          // AI đã chọn đúng chuẩn → giữ
+      }
       // promptName đang là TÊN NGƯỜI (nhiều khả năng chính là tên thật) → dồn nó vào
-      // originalName (nếu chỗ đó trống) để bộ lọc scrub bắt được, rồi gán danh xưng.
-      return { ...c, originalName: orig || pn, promptName: EPITHET_POOL[subIdx++ % EPITHET_POOL.length] };
+      // originalName (nếu chỗ đó trống) để bộ lọc scrub bắt được, rồi gán mã danh.
+      const codename = pickCodename(c);
+      usedCodenames.add(foldText(codename));
+      return { ...c, originalName: orig || pn, promptName: codename };
     });
     // 👉 Lọc tên thật khỏi globalContext — context này được bơm vào MỌI system prompt
     // phía sau, để nguyên tên thật là mồi cho AI lặp lại nó ở từng cảnh.
@@ -797,6 +910,9 @@ ${CELEBRITY_SAFETY_RULE}
 ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
+${STORYTELLING_RULE}
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people.
+
 CONTEXT: ${globalContext}
 
 ${charProfiles ? `=== MASTER CHARACTER DIRECTORY (HARD ENFORCEMENT) ===
@@ -823,7 +939,10 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
             validScenes[idx].visualDescription = scrubRealNames(res.visualDescription || "", characters);
             validScenes[idx].characterDetails = scrubRealNames(res.characterDetails || "Contextual characters", characters);
             validScenes[idx].settingTime = scrubRealNames(res.settingTime || "Contextual setting", characters);
-            if (validScenes[idx].visualDescription !== "") {
+            // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ/bạo lực/đám đông) — dính thì tạo lại,
+            // trừ vòng cuối (chấp nhận để không kẹt cả đoạn).
+            const bannedHit = findBannedVisual(`${validScenes[idx].visualDescription} ${validScenes[idx].settingTime}`);
+            if (validScenes[idx].visualDescription !== "" && (!bannedHit || loopCount >= 3)) {
                successfulIds.push(idx);
             }
           }
@@ -883,6 +1002,9 @@ ${CELEBRITY_SAFETY_RULE}
 ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
+${STORYTELLING_RULE}
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people.
+
 CONTEXT: ${globalContext}
 
 ${charProfiles ? `=== MASTER CHARACTER DIRECTORY (HARD ENFORCEMENT) ===
@@ -904,7 +1026,9 @@ CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' mus
           
           for (const res of aiResults) {
               const scene = pending.find(s => s.id === res.id);
-              if (scene && res.visualDescription) {
+              // 👉 Chốt chặn hình ảnh cấm ở luồng vá cảnh — dính thì để vòng sau tạo lại.
+              const bannedHit = findBannedVisual(`${res.visualDescription || ''} ${res.settingTime || ''}`);
+              if (scene && res.visualDescription && (!bannedHit || loopCount >= 2)) {
                   results.push({
                       ...scene,
                       // 👉 Lọc tên thật ngay tại cửa nhập của luồng vá cảnh (trước đây không kiểm tra gì).
@@ -965,6 +1089,9 @@ Apply this to the 'narrative', 'setting' and 'camera_motion' fields: depict ONLY
 
 ${ANTI_ARTIFACT_RULE}
 Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, keep the camera locked, and lean on environmental motion. Being artifact-free outranks looking cinematic.
+
+${STORYTELLING_RULE}
+Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': the viewer must see PEOPLE living the story — never paperwork/maps/text props, never an empty frame, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus.
 
 CONTEXT: ${globalContext}
 
@@ -1035,7 +1162,7 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
 
   // 👉 Cue KHẲNG ĐỊNH (consistent anatomy...) đặt trước, rồi mới tới danh sách phủ định
   // NGẮN & CỤ THỂ nhắm đúng lỗi hay gặp — theo đúng cách VEO 3 phản hồi tốt nhất.
-  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, oversaturated colors, plastic skin, text, watermark, caption.";
+  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, oversaturated colors, plastic skin, readable text, watermark, caption, maps, documents, newspapers, calendar pages, dense crowds.";
 
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
@@ -1105,6 +1232,10 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
             return { ok: false, reason: `leaked real name "${c.originalLower}" — must use canonical "${c.canonical}"` };
           }
         }
+        // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ đọc được/bạo lực/đám đông dày đặc).
+        // Bỏ phần NEGATIVE_TAIL trước khi quét — đuôi negative chứa chính các từ cấm.
+        const bannedVis = findBannedVisual(promptText.replace(NEGATIVE_TAIL, ''));
+        if (bannedVis) return { ok: false, reason: `banned visual "${bannedVis}" — retell with people + setting instead` };
         for (const name of requiredNames) {
           if (!lower.includes(name.toLowerCase())) return { ok: false, reason: `missing name "${name}"` };
           const c = charByCanonical[name];
