@@ -72,27 +72,6 @@ const fixFilmLook = (s: string): string =>
    .replace(/\barchival (?:footage|film)\b/gi, 'documentary realism')
    .replace(/\b(?:vintage|old) film (?:look|style|reel|stock|aesthetic)\b/gi, 'period look');
 
-// 👉 NGHỊCH LÝ DIFFUSION (người dùng kiểm chứng thực tế): nhắc "unpeeled / whole / peel /
-// skin / intact" về quả CHÍNH LÀ MỒI khiến Veo bóc vỏ nó (như "đừng nghĩ tới con voi").
-// Bản prompt có "whole/unpeeled" → chuối tự bóc; bản BỎ các từ đó → không lỗi. Vậy nên
-// không thêm câu khóa nữa mà XÓA các từ mồi quanh trái cây/trứng, để lại mô tả trung tính.
-const PRODUCE_ALT = 'bananas?|oranges?|tangerines?|mango(?:es)?|apples?|pears?|peach(?:es)?|plums?|lemons?|limes?|coconuts?|pineapples?|melons?|watermelons?|eggs?|fruits?';
-const PRODUCE_RE = new RegExp('\\b(?:' + PRODUCE_ALT + ')\\b', 'i');
-// Tính từ "nguyên vẹn" đứng ngay trước trái cây (cho phép vài tính từ vô hại chen giữa).
-const TRIGGER_ADJ_RE = new RegExp('\\b(?:whole|unpeeled|un-peeled|intact|uncut|unbroken|unopened|unhusked|uncracked)\\s+(?=(?:(?:ripe|fresh|single|yellow|green|small|large|big|golden)\\s+)*(?:' + PRODUCE_ALT + ')\\b)', 'gi');
-const neutralizeProduce = (action: string): string => {
-  if (!action || !PRODUCE_RE.test(action)) return action;
-  let out = action;
-  out = out.replace(TRIGGER_ADJ_RE, '');                                   // "whole/unpeeled banana" → "banana"
-  out = out.replace(/,?\s*(?:its|the|their)\s+(?:skin|peel|shell)\s+(?:unbroken|intact|unopened|whole)\b/gi, ''); // "its skin unbroken"
-  out = out.replace(/,?\s*(?:remaining|remains?|staying|stays?|kept)\b[^.,;]*\b(?:unpeeled|whole|intact|sealed|unbroken)\b[^.,;]*/gi, ''); // mệnh đề neo lạc
-  out = out.replace(/\b(?:un-?peeled|unbroken)\b/gi, '');                  // sót lại đơn lẻ
-  out = out.replace(/\bpeels?\b/gi, 'skin');                              // còn "peel" (noun) → "skin" (an toàn ngữ pháp hơn xóa)
-  out = out.replace(/\bthe\s+fruit\b/gi, 'it');                           // "the (unpeeled) fruit" đã trơ → "it"
-  out = out.replace(/\s{2,}/g, ' ').replace(/\s+([,.;])/g, '$1').replace(/([,;])\s*([,;])/g, '$1').trim();
-  return out;
-};
-
 // 👉 Chốt chặn chính sách (tất định): mô tả nhân vật KHÔNG được chứa chức danh/vai trò
 // (president, general, minister...) vì chính nó định danh người thật (vd "president of
 // Guatemala" = Árbenz). Cắt bỏ mọi đoạn (ngăn bởi dấu phẩy) có chứa từ chức danh, giữ lại
@@ -1478,8 +1457,7 @@ ONE SCENE PER PROMPT (critical): each prompt is a SINGLE continuous moment — O
 
 NO ERRORS (this is the #1 priority — a clean simple shot always beats a fancy one):
 - ONE continuous whole-body action at a calm pace (walking, carrying, rowing, sweeping, loading, planting, speaking calmly, watching). No fast, intricate, or fiddly motion; no fine finger work in close-up.
-- Objects never change form in the shot: no cutting, peeling, slicing, breaking, cracking, or opening, and no half-done states.
-- IMPORTANT for fruit / eggs / bottles / wrapped items: in the 'action' text describe the item PLAINLY ("a ripe banana", "a brown egg", "a glass bottle") and keep any hand interaction rigid (picking up, holding, carrying, placing). Do NOT write the words "peel", "unpeeled", "whole", "intact", "skin", or "unbroken" about it — naming its intact/peel state paradoxically makes the video model start peeling/opening it. Even better, show the item with no hand touching it, or have the person doing an unrelated action nearby.
+- Keep the main action simple and rigid — people carry, hold, walk, place, row, sweep, or speak. Pick actions that do not require an object to visibly transform mid-shot. Describe every object plainly and naturally, in as few words as it needs — no extra state adjectives.
 - An object appears in only ONE place in the frame (in a hand OR on a surface, never both).
 - At most 3-5 people in sharp focus; larger groups only as soft, out-of-focus background.
 - Every person carries an explicit ethnicity + era-appropriate clothing (default: a white American, era-correct, when the story doesn't specify).
@@ -1605,14 +1583,12 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
 
       const pushAccepted = (pi: any, scene: Scene) => {
         // 👉 CHỐT CHẶN CUỐI (tất định) — mọi đường ra đều qua đây. Đơn giản:
-        // 1) Xóa từ mồi bóc vỏ ("whole/unpeeled/skin...") quanh trái cây để Veo không tự bóc.
-        if (typeof pi.action === 'string') pi = { ...pi, action: neutralizeProduce(pi.action) };
-        // 2) Nhét hậu tố người dùng (nếu có) vào cuối 'style'.
+        // 1) Nhét hậu tố người dùng (nếu có) vào cuối 'style'.
         if (customPromptSuffix.trim()) {
           const suffix = customPromptSuffix.trim();
           pi = { ...pi, style: `${(pi.style || '').trim()} ${suffix}`.trim() };
         }
-        // 3) Ghép thành JSON, rồi sửa tất định trên chuỗi JSON: xóa từ "phim nhựa"
+        // 2) Ghép thành JSON, rồi sửa tất định trên chuỗi JSON: xóa từ "phim nhựa"
         //    (chống viền phim/xước) và quét tên người thật (chống lộ danh tính).
         let json = assembleFinalPrompt(pi);
         json = fixFilmLook(json);
