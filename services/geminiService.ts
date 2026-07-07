@@ -72,6 +72,25 @@ const fixFilmLook = (s: string): string =>
    .replace(/\barchival (?:footage|film)\b/gi, 'documentary realism')
    .replace(/\b(?:vintage|old) film (?:look|style|reel|stock|aesthetic)\b/gi, 'period look');
 
+// 👉 Veo hay TỰ bóc vỏ/đập vỡ/mở nắp vật thể khi thấy tay người ở gần + đẩy máy vào —
+// dù prompt đã ghi "whole". Nếu 'action' nhắc tới vật dễ biến đổi (và KHÔNG phải cây/vườn),
+// tự chèn MỘT câu khóa mạnh "giữ nguyên vẹn suốt cảnh". Một hàm tối giản, không quay lại
+// mớ regex nhiều tầng cũ.
+const RISKY_OBJECT_RE = /\b(bananas?|oranges?|tangerines?|mango(?:es)?|apples?|pears?|peach(?:es)?|plums?|eggs?|bottles?|jars?|coconuts?|pineapples?|lemons?|limes?|melons?|watermelons?|loaf|loaves)\b(?!\s+(?:trees?|plants?|groves?|plantations?|orchards?|fields?|lea(?:f|ves)))/i;
+const ALREADY_WHOLE_RE = /\b(?:unpeeled|uncracked|unopened|skin unbroken|nothing (?:peels|opens|cuts)|stays? (?:whole|intact|sealed|closed)|remains? (?:whole|intact|sealed|closed))\b/i;
+const keepObjectWhole = (action: string): string => {
+  if (!action) return action;
+  const m = action.match(RISKY_OBJECT_RE);
+  if (!m || ALREADY_WHOLE_RE.test(action)) return action;
+  const noun = m[1].toLowerCase();
+  let clause: string;
+  if (/banana|orange|tangerine|mango|lemon|lime/.test(noun)) clause = `The ${noun} stays completely whole and unpeeled, its skin unbroken, from the first frame to the last — no hand touches or peels it, nothing opens on its own.`;
+  else if (/egg/.test(noun)) clause = `The ${noun} stays completely whole and uncracked from the first frame to the last — no hand cracks it.`;
+  else if (/bottle|jar/.test(noun)) clause = `The ${noun} stays sealed and unopened from the first frame to the last — no hand opens it.`;
+  else clause = `The ${noun} stays completely whole and intact, its skin unbroken, from the first frame to the last — no hand cuts, peels or opens it.`;
+  return `${action.trim()} ${clause}`;
+};
+
 const getColorDescription = (style: ColorStyle): string => {
   switch (style) {
     case 'cinematic': return "HDR, deep shadows, balanced highlights, pro color grading, realistic textures";
@@ -1440,6 +1459,7 @@ ONE SCENE PER PROMPT (critical): each prompt is a SINGLE continuous moment — O
 NO ERRORS (this is the #1 priority — a clean simple shot always beats a fancy one):
 - ONE continuous whole-body action at a calm pace (walking, carrying, rowing, sweeping, loading, planting, speaking calmly, watching). No fast, intricate, or fiddly motion; no fine finger work in close-up.
 - Objects stay WHOLE the entire shot — never cut, peel, slice, break, crack, or open them; never a half-done state. If someone holds a fruit/egg/bottle/parcel, it stays intact.
+- Do NOT build a shot around a hand resting next to, reaching toward, or the camera pushing in on a peelable food object (banana, orange, egg, etc.) — that framing makes the model peel/open it by itself. For such objects, either show them alone (no hand in frame) or have the person doing a clearly unrelated action away from the object.
 - An object appears in only ONE place in the frame (in a hand OR on a surface, never both).
 - At most 3-5 people in sharp focus; larger groups only as soft, out-of-focus background.
 - Every person carries an explicit ethnicity + era-appropriate clothing (default: a white American, era-correct, when the story doesn't specify).
@@ -1565,12 +1585,14 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
 
       const pushAccepted = (pi: any, scene: Scene) => {
         // 👉 CHỐT CHẶN CUỐI (tất định) — mọi đường ra đều qua đây. Đơn giản:
-        // 1) Nhét hậu tố người dùng (nếu có) vào cuối 'style'.
+        // 1) Vật dễ biến đổi (chuối, trứng, chai...) → chèn câu khóa giữ nguyên vẹn.
+        if (typeof pi.action === 'string') pi = { ...pi, action: keepObjectWhole(pi.action) };
+        // 2) Nhét hậu tố người dùng (nếu có) vào cuối 'style'.
         if (customPromptSuffix.trim()) {
           const suffix = customPromptSuffix.trim();
           pi = { ...pi, style: `${(pi.style || '').trim()} ${suffix}`.trim() };
         }
-        // 2) Ghép thành JSON, rồi sửa tất định trên chuỗi JSON: xóa từ "phim nhựa"
+        // 3) Ghép thành JSON, rồi sửa tất định trên chuỗi JSON: xóa từ "phim nhựa"
         //    (chống viền phim/xước) và quét tên người thật (chống lộ danh tính).
         let json = assembleFinalPrompt(pi);
         json = fixFilmLook(json);
