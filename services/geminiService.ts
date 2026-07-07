@@ -511,8 +511,8 @@ DO:
 - Give each person ONE single simple action, or a still, stable pose (standing, sitting, looking, slowly turning the head, gently stirring, slowly walking).
 - Keep hands relaxed, low-detail, or out of tight framing. NEVER stage intricate finger work / counting / complex object manipulation in close view.
 - Keep the number of people LOW and interaction MINIMAL. If several people are present, they mostly stand/sit calmly; no tangled group action.
-- PAIR PERSON + OBJECT: when the subject is an object (fruit, tool, product), keep it as the focal anchor but add ONE person gently interacting with it (holding it, reaching for it, placing it down, walking toward it, examining it) at Medium/Wide distance. A frame with a calm person is ALWAYS more watchable than an empty still life.
-- Keep the shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) plus the person's one calm action.
+- OBJECT SCENES: object-only shots are welcome — vary the form/setting/era between scenes (see VISUAL STORYTELLING RULE S2b) and keep them alive with environmental motion + one gentle camera move. If a person joins the object, keep the object as the focal anchor with ONE gentle rigid interaction (holding, reaching, placing down) at Medium/Wide distance.
+- Keep every shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) plus at most one calm action.
 
 AVOID (these are the top causes of AI artifacts):
 - Tight close-ups of hands or faces performing detailed motion.
@@ -530,8 +530,13 @@ S1. SHOW THE STORY, NOT PAPERWORK. When the narration mentions a place, activity
    - "bananas spread to East Africa" → traders unloading banana bunches from a wooden sailing boat at a coastal market — NOT a map with arrows.
    - "the company owned 42% of the land" → a lone farmer standing tiny before an endless fenced plantation stretching to the horizon — NOT documents or charts.
    - "a court conviction in 2024" → lawyers in suits walking up modern courthouse steps — NOT a newspaper headline.
-S2. HUMAN PRESENCE. Every scene should include at least ONE person performing ONE calm action tied to the narration (walking, planting, carrying, inspecting, patrolling, standing watch, gazing into the distance). Pure landscape/object shots are allowed ONLY when the narration is explicitly about that place or object — and even then, prefer a human figure somewhere in frame (a distant worker walking between the trees).
-S3. PERSON + OBJECT TOGETHER. When the subject is an object (a fruit, a tool, a product), keep the object as the focal anchor but add a person gently interacting with it: holding it, reaching for it, placing it down, walking toward it, examining it. "A banana on a counter" → "a woman reaches for the banana on the sunlit kitchen counter, cozy kitchen in soft focus behind her".
+S2. ONE CLEAR SUBJECT PER FRAME — PEOPLE ARE OPTIONAL. Every scene needs ONE subject the viewer instantly recognizes, but that subject does NOT have to be a person. Include a person only when they genuinely add interest: period workers, soldiers, traders, the story's characters. A generic modern person adds nothing — for scenes about an object or place, the object/place ITSELF is the better subject, kept alive with environmental motion and one gentle camera move.
+S2b. VARIETY ACROSS SCENES (anti-repetition — the real boredom killer). When the same topic recurs through the script, NEVER repeat the same composition scene after scene. Rotate through the subject's WHOLE WORLD along three axes — this applies to ANY topic, not just food:
+   • FORMS (the subject at different stages/scales): raw material → growing/being made → the finished thing → many of them together → transported → displayed. E.g. a fruit: single fruit → hanging bunch → flowering plant → whole tree → grove rows → crates at the dock → market pile. A sword: glowing steel in the forge → the smith's workshop → the finished blade on a rack → an armory wall of weapons → a museum display. Coffee: red cherries on the branch → terraced hillsides → beans drying in the yard → burlap sacks in a warehouse → a steaming cup.
+   • PLACES: where it is born, grown/made, sold, shipped, used — kitchen, jungle, plantation, workshop, village market, port warehouse, ship deck, roadside stand, shop shelf, a home.
+   • ERAS & LIGHT: the ancient origin at misty dawn, the colonial/industrial era at harsh noon, the 1950s in warm tungsten, the modern day in morning sun; rain on leaves, golden hour, drifting fog, candlelight.
+   Pick the form/place/era that best matches THIS chunk's narration; between neighbouring scenes, deliberately change at least the setting or the form.
+S3. WHEN A PERSON JOINS AN OBJECT (optional, not required): keep the object as the focal anchor and let the person interact gently and rigidly only — holding, reaching, placing down, walking toward, examining. Follow S8's state-anchor and container tricks.
 S4. SENSITIVE/VIOLENT EVENTS → AFTERMATH WITH PEOPLE, NEVER GORE. Never depict weapons being aimed or fired, fighting, corpses, blood, wounds, graves, skulls, or people in terror. Tell such moments through a calm aftermath that still contains people doing ordinary actions: soldiers slowly patrolling an empty square at dawn, a woman picking up a fallen hat, villagers walking silently past shuttered houses, mourners placing flowers and candles. The frame must never be empty scenery alone.
 S5. CROWD LIMIT. At most 3-5 clearly visible people in the foreground; any larger gathering appears only as soft-focus silhouettes or indistinct shapes in the background. Never describe "thousands of people", "a sea of faces", or a dense packed crowd in sharp focus.
 S6. NO READABLE TEXT. Never show text meant to be read: headlines, labels, dates, calendar pages, signs, screens, typed words. Show the passage of time through nature and light instead (leaves falling, a candle burning down, light shifting across a room, seasons changing outside a window).
@@ -618,16 +623,19 @@ const findBannedVisual = (text: string): string | null => {
 // 👉 NEO TRẠNG THÁI (tất định): vật thể có "biến đổi kinh điển" (chuối→bóc vỏ, trứng→đập,
 // chai→mở...) hễ bị tay cầm/nhấc là model tự khởi động biến đổi đó. Nếu prompt có cảnh
 // cầm nắm các vật này mà CHƯA có câu neo trạng thái → code tự nối thêm, không chờ AI nhớ.
-const HANDLED_OBJECT_RE = /\b(?:holds?|holding|lifts?|lifting|picks?\s+up|picking\s+up|carr(?:y|ies|ying)|grasps?|grips?|gripping|raises?|raising|reach(?:es|ing)?\s+for)\b[^.!?]{0,60}?\b(bananas?|oranges?|apples?|mango(?:es|s)?|coconuts?|eggs?|bottles?|jars?|loa(?:f|ves)|bread)\b/i;
+const HANDLED_OBJECT_RE = /\b(?:holds?|holding|lifts?|lifting|picks?\s+up|picking\s+up|carr(?:y|ies|ying)|grasps?|grips?|gripping|raises?|raising|reach(?:es|ing)?\s+for)\b[^.!?]{0,60}?\b(bananas?|oranges?|tangerines?|apples?|mango(?:es|s)?|peach(?:es)?|pears?|grapes?|watermelons?|pineapples?|coconuts?|corn|eggs?|bottles?|jars?|(?:tin|metal)\s+cans?|envelopes?|letters?|gifts?|presents?|packages?|parcels?|loa(?:f|ves)|bread)\b/i;
 const STATE_ANCHOR_RE = /\b(?:remains?|stays?|kept?)\b[^.!?]{0,40}\b(?:whole|intact|unpeeled|unopened|unchanged|sealed|closed)\b|\b(?:unpeeled|unopened|skin intact)\b/i;
 const buildStateAnchor = (text: string): string => {
   const m = text.match(HANDLED_OBJECT_RE);
   if (!m || STATE_ANCHOR_RE.test(text)) return '';
   const noun = m[1].toLowerCase();
   let state = 'completely whole and intact';                       // mặc định
-  if (/banana|orange|apple|mango|coconut/.test(noun)) state = 'completely whole, unpeeled and intact, skin unbroken';
+  if (/banana|orange|tangerine|mango/.test(noun)) state = 'completely whole, unpeeled and intact, skin unbroken';
+  else if (/apple|peach|pear|grape|watermelon|pineapple|coconut/.test(noun)) state = 'completely whole, uncut and intact, skin unbroken';
+  else if (/corn/.test(noun)) state = 'whole and unhusked';
   else if (/egg/.test(noun)) state = 'completely whole and uncracked';
-  else if (/bottle|jar/.test(noun)) state = 'sealed and unopened';
+  else if (/bottle|jar|can/.test(noun)) state = 'sealed and unopened';
+  else if (/envelope|letter|gift|present|package|parcel/.test(noun)) state = 'sealed, wrapped and unopened';
   else if (/loa|bread/.test(noun)) state = 'completely whole and uncut';
   return `The ${noun} remains ${state} for the entire shot — nothing peels, opens or splits.`;
 };
@@ -955,7 +963,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: give the chunk ONE clear subject in its real place and era — people only when they genuinely add interest, otherwise the object/place itself in a VARIED form/setting/era (per S2/S2b — never repeat the previous chunk's composition); NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
@@ -1047,7 +1055,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: give the chunk ONE clear subject in its real place and era — people only when they genuinely add interest, otherwise the object/place itself in a VARIED form/setting/era (per S2/S2b — never repeat the previous chunk's composition); NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
@@ -1135,7 +1143,7 @@ ${ANTI_ARTIFACT_RULE}
 Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, give the camera exactly ONE gentle slow move (or static), and lean on environmental motion. Being artifact-free outranks looking cinematic.
 
 ${STORYTELLING_RULE}
-Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': the viewer must see PEOPLE living the story — never paperwork/maps/text props, never an empty frame, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7). NEVER depict the instant an object changes form — choose BEFORE or AFTER, object in ONE place only (per S8).
+Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': give the viewer ONE clear subject per scene — people when they genuinely add interest, otherwise the object/place itself in a varied form/setting/era (per S2/S2b, never a repeated composition) — never paperwork/maps/text props, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7). NEVER depict the instant an object changes form — choose BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
