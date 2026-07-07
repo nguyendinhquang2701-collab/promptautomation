@@ -28,7 +28,9 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : [];
   });
   
-  const [colorStyle, setColorStyle] = useState<ColorStyle>(() => (localStorage.getItem('app1_colorStyle') as ColorStyle) || 'cinematic');
+  // Đã bỏ mục chọn "Tông màu video" khỏi UI → luôn dùng tông tự nhiên (default),
+  // không ép grading điện ảnh nữa.
+  const [colorStyle, setColorStyle] = useState<ColorStyle>('default');
   
   // 👉 Cập nhật cấu hình mặc định: audioMode là 'remove'
   const [promptOptions, setPromptOptions] = useState<PromptOptions>(() => {
@@ -337,7 +339,7 @@ const App: React.FC = () => {
         
         Object.entries(keysToSave).forEach(([k, v]) => { if (v) localStorage.setItem(k, v); });
 
-        setAppState(AppState.INPUT); setRawScript(''); setGlobalContext(''); setStyleAnalysis(''); setStyleSummary(''); setCharacters([]); setColorStyle('cinematic'); setImagePreview(null); 
+        setAppState(AppState.INPUT); setRawScript(''); setGlobalContext(''); setStyleAnalysis(''); setStyleSummary(''); setCharacters([]); setColorStyle('default'); setImagePreview(null);
         setCustomPromptSuffix('');
         // 👉 Cập nhật reset kèm audioMode
         setPromptOptions({ splitLogic: 'default', audioMode: 'remove' });

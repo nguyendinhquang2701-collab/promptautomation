@@ -263,23 +263,6 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
 
               <div>
                 <label className="text-[9px] uppercase font-black text-slate-500 tracking-widest mb-1.5 block">
-                  Tông Màu Video
-                </label>
-                <select 
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-200 focus:outline-none focus:border-blue-500/50 text-xs font-semibold cursor-pointer"
-                  value={colorStyle}
-                  onChange={e => setColorStyle(e.target.value as any)}
-                >
-                  <option value="default">✨ Mặc định (Tự nhiên)</option>
-                  <option value="cinematic">🎬 Màu Phim (Cinematic)</option>
-                  <option value="hot">🔥 Màu Nóng (Hot)</option>
-                  <option value="warm">☀️ Màu Ấm (Warm)</option>
-                  <option value="cold">❄️ Màu Lạnh (Cold)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-[9px] uppercase font-black text-slate-500 tracking-widest mb-1.5 block">
                   Cơ chế cắt kịch bản
                 </label>
                 <select 
