@@ -154,9 +154,9 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path fillRule="evenodd" d="M10 2.5c-1.31 0-2.526.386-3.546 1.051a.75.75 0 01-.82-1.256A8 8 0 0118 9a22.47 22.47 0 01-1.228 7.351.75.75 0 11-1.417-.49A20.97 20.97 0 0016.5 9 6.5 6.5 0 0010 2.5zM4.333 4.416a.75.75 0 01.218 1.038A6.466 6.466 0 003.5 9a7.966 7.966 0 01-1.293 4.362.75.75 0 01-1.257-.819A6.466 6.466 0 002 9c0-1.61.476-3.11 1.295-4.365a.75.75 0 011.038-.219zM10 6.12a3 3 0 00-3 3v1.066a1.75 1.75 0 01-1.558 1.739l-.126.015a.75.75 0 10.168 1.49l.126-.014a3.25 3.25 0 002.89-3.23V9a1.5 1.5 0 013 0v.547a4.5 4.5 0 01-1.144 3.013l-.53.53a.75.75 0 101.06 1.06l.53-.53a6 6 0 001.584-4.073V9a3 3 0 00-3-3zM7.5 15.5a.75.75 0 011-.4l.325.132a.75.75 0 10.55-1.396l-.325-.132a.75.75 0 01-.4-1 1.5 1.5 0 00-2.812-.511.75.75 0 01-1.35-.646 3 3 0 015.625 1.022.75.75 0 01.4.1l.325.132a2.25 2.25 0 11-1.65 4.187l-.325-.132a.75.75 0 01-.4-1z" clipRule="evenodd" /></svg>
                             Generated Prompt (Veo 3)
                           </h4>
-                          <p className="text-white font-medium bg-slate-950/50 p-4 rounded-xl border border-slate-800/80 leading-relaxed font-mono text-sm selection:bg-indigo-500/40">
+                          <pre className="text-white font-medium bg-slate-950/50 p-4 rounded-xl border border-slate-800/80 leading-relaxed font-mono text-sm selection:bg-indigo-500/40 whitespace-pre-wrap break-words overflow-x-auto">
                             {item.generatedPrompt}
-                          </p>
+                          </pre>
                         </div>
                       </div>
                     </div>

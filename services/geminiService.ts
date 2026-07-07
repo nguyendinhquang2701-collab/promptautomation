@@ -62,6 +62,16 @@ loadAIProviders();
 const CONFIG = { SCENE_CONCURRENCY: 3, PROMPT_CONCURRENCY: 5, MAX_RETRIES: 3, BATCH_SIZE: 10 };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// 👉 Veo hiểu các từ "phim nhựa" (film grain, shot on 35mm film, archival film...) theo
+// nghĩa ĐEN → vẽ luôn viền phim, lỗ răng cưa, số khung hình, xước đen lên video (lỗi thật
+// người dùng gặp). Thay tất định bằng từ an toàn, giữ ý "trông như quay thật".
+const fixFilmLook = (s: string): string =>
+  s.replace(/\bshot on (?:a\s+)?\d{1,3}\s*mm film\b/gi, 'natural realistic look')
+   .replace(/\b(?:8|16|35|70)\s*mm film\b/gi, 'cinema look')
+   .replace(/\b(?:subtle |fine |light |heavy )?film[- ]?grain\b/gi, 'true-to-life texture')
+   .replace(/\barchival (?:footage|film)\b/gi, 'documentary realism')
+   .replace(/\b(?:vintage|old) film (?:look|style|reel|stock|aesthetic)\b/gi, 'period look');
+
 const getColorDescription = (style: ColorStyle): string => {
   switch (style) {
     case 'cinematic': return "HDR, deep shadows, balanced highlights, pro color grading, realistic textures";
@@ -477,17 +487,18 @@ const PROMPT_SCHEMA = {
   items: {
     type: Type.OBJECT,
     properties: {
-      sceneId: { type: Type.INTEGER },
-      shot: { type: Type.STRING, description: "Shot size + neutral angle + lens + DOF, Medium/Wide preferred. e.g. 'Static medium-wide eye-level shot, 35mm, moderate depth of field'. Never a tight close-up on hands." },
-      narrative: { type: Type.STRING, description: "One flowing paragraph, MAX 50 words (VERBATIM_BLOCKs not counted). Introduce each character with their VERBATIM_BLOCK inline (first mention only), then give each ONE visible, continuous ACTION in progress — woven together naturally. Prefer real whole-body ACTIONS (carrying, walking, sweeping, rowing, loading, riding) over static poses; calm pace, no fast or intricate motion. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) carries a wicker basket across the courtyard as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) leads a grey horse toward the stable gate.' Do NOT list all characters first then write actions separately." },
-      expression: { type: Type.STRING, description: "MAX 8 words. Subtle facial expression per character. Empty string if no person on screen." },
-      setting: { type: Type.STRING, description: "MAX 20 words: period, location, time of day, weather, at most 3-4 named objects in frame + one environmental motion. MUST NOT repeat anything already said in 'narrative'." },
-      lighting: { type: Type.STRING, description: "MAX 10 words: light direction, color temperature, contrast only (e.g. 'soft window daylight, 5500K, low contrast'). NO quality jargon here — HDR/color grading/textures belong ONLY in style_tail." },
-      camera_motion: { type: Type.STRING, description: "Exactly ONE gentle, slow, smooth camera move per shot: slow push-in, slow pull-back, slow pan left/right, gentle lateral drift, or slow tilt. Static lock-off also allowed. Never combine moves; never orbit, crane, fast tracking, handheld shake, whip pan, zoom, or drone." },
-      style_tail: { type: Type.STRING, description: "Style summary + quality anchors. MUST end with the exact phrase: Rendered in the style of <styleSummary>." },
-      _validation_subjects: { type: Type.STRING, description: "Comma-separated list of every CANONICAL_NAME that appears in this scene. Used for internal validation only." }
+      sceneId: { type: Type.INTEGER, description: "Matches the input scene id." },
+      camera_angle: { type: Type.STRING, description: "SHORT, 1-3 words. Neutral only: eye-level / slight low-angle / slight high-angle / straight-on." },
+      shot_size: { type: Type.STRING, description: "SHORT, 1-3 words. Medium or Wide preferred: wide shot / medium-wide shot / medium shot / establishing shot. Never a tight close-up on hands or faces." },
+      camera_movement: { type: Type.STRING, description: "SHORT, 1-3 words. Exactly ONE gentle move OR static: static / slow push-in / slow pull-back / slow pan / gentle drift / slow tilt." },
+      setting: { type: Type.STRING, description: "SHORT, the place only, ≤12 words. e.g. '1950s radio studio, warm lamplight'." },
+      time: { type: Type.STRING, description: "SHORT, era + time of day, ≤6 words. e.g. '1950s, evening' or 'modern day, morning'." },
+      character: { type: Type.STRING, description: "SHORT. Who is on screen: each person's CANONICAL_NAME + ethnicity + era-appropriate clothing (copy the VERBATIM_BLOCK exactly when the dictionary gives one). Use empty string \"\" when the scene has NO people." },
+      action: { type: Type.STRING, description: "THE MAIN FIELD — put MOST of your detail here (~40-70 words). Describe ONE single, natural, graceful, SIMPLE action unfolding smoothly across 8 seconds: body posture, pace, gaze, and the gentle motion around it. Keep it ERROR-FREE: one continuous whole-body action at a calm pace; objects stay whole (never cut, peel, break, or open them); no fast, intricate, or multi-step motion; no second action. If there are NO people, describe the object/place kept alive by gentle environmental motion (wind, steam, ripples, drifting light)." },
+      style: { type: Type.STRING, description: "SHORT visual style + color mood. MUST end exactly with: 'Rendered in the style of <styleSummary>.' Never use film-medium words (film grain, shot on film, 35mm film, archival)." },
+      _subjects: { type: Type.STRING, description: "Comma-separated list of every CANONICAL_NAME present in this scene. Internal validation only." }
     },
-    required: ["sceneId", "shot", "narrative", "setting", "lighting", "camera_motion", "style_tail", "_validation_subjects"]
+    required: ["sceneId", "camera_angle", "shot_size", "camera_movement", "setting", "time", "character", "action", "style"]
   }
 };
 
@@ -758,15 +769,28 @@ RULES:
 4. Never let a real public figure's name appear in ANY output field (names, narrative, setting, context, dialogue references). If such a name appears in the source text and is not a directory character, replace it with a generic descriptor (e.g. "a famous singer") — never the real name.
 === END REAL-PERSON NAME SAFETY ===`;
 
+// Gom mô tả nhân vật, lọc giá trị rác và khử trùng lặp (chống ra "(Guatemalan,
+// Guatemalan, Not specified)"). Tách theo dấu phẩy, so khớp không dấu/không hoa.
+const CHAR_JUNK = new Set(['n/a', 'none', 'unspecified', 'not specified', 'unknown', 'not mentioned', 'no description', 'khong', 'null', 'undefined', '""', '', 'empty']);
+const cleanCharacterParts = (c: CharacterIdentity): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [c.visualDescription, c.ethnicity, c.clothing]) {
+    for (const piece of (raw || '').split(',')) {
+      const t = piece.trim();
+      const key = foldText(t);
+      if (!t || CHAR_JUNK.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      out.push(t);
+    }
+  }
+  return out;
+};
+
 const buildCharacterProfiles = (characters: CharacterIdentity[]): string => {
   if (!characters || characters.length === 0) return '';
   return characters.map((c, i) => {
-    const detailsArr: string[] = [];
-    if (c.visualDescription?.trim()) detailsArr.push(c.visualDescription.trim());
-    const eth = c.ethnicity?.trim().toLowerCase();
-    if (eth && !['n/a', 'none', 'unspecified', 'không', 'null', 'undefined', '""'].includes(eth)) detailsArr.push(c.ethnicity!.trim());
-    const clo = c.clothing?.trim().toLowerCase();
-    if (clo && !['n/a', 'none', 'unspecified', 'không', 'null', 'undefined', '""'].includes(clo)) detailsArr.push(c.clothing!.trim());
+    const detailsArr = cleanCharacterParts(c);
 
     const roleAlias = c.name.trim();
     const targetName = c.promptName?.trim() || roleAlias;
@@ -1368,9 +1392,9 @@ export const generatePromptsForSingleSegment = async (
   if (segment.scenes.length === 0) return { items: [] };
   const colorMoodDesc = getColorDescription(colorStyle);
   
-  // 👉 GÓI REALISM (Fix F): mặc định nghiêng hẳn về "trông như phim tài liệu quay thật"
-  // — grain nhẹ, ánh sáng tự nhiên không hoàn hảo, màu trung thực — thay vì chất CGI bóng bẩy.
-  const finalStyleStr = styleSummary ? styleSummary.trim() : 'authentic documentary realism, shot on 35mm film, subtle film grain, natural imperfect lighting, true-to-life color';
+  // 👉 Mặc định "trông như quay thật" — KHÔNG dùng từ phim nhựa (film/grain) để Veo
+  // không vẽ viền phim, lỗ răng cưa, xước đen lên video.
+  const finalStyleStr = fixFilmLook(styleSummary ? styleSummary.trim() : 'authentic documentary realism, natural lighting, true-to-life color');
   const techDetailsStr = styleAnalysis ? `Technical rendering details to follow: ${styleAnalysis}` : '';
 
   // BƠM TỪ ĐIỂN NHÂN VẬT VÀO BƯỚC CUỐI
@@ -1398,130 +1422,75 @@ export const generatePromptsForSingleSegment = async (
     try { visualPlans = await run; } catch { /* planner là tầng phụ trợ — bỏ qua */ }
   }
 
-  // 👉 B3.5 — Audit pass: không set thì theo gói API (paid bật, free tắt cho đỡ tốn lượt).
-  const auditEnabled = options?.auditPass ?? ((typeof localStorage !== 'undefined' ? (localStorage.getItem('app1_api_tier') || 'paid') : 'paid') !== 'free');
+  const systemInstruction = `You are a video-prompt engineer for Veo 3 (8-second historical B-roll for American viewers).
+For EACH input scene, output ONE JSON object with the fields below, all in ENGLISH. OUTPUT STRICTLY VALID JSON.
+Put MOST of your detail in "action"; keep every other field SHORT and plain — do not over-decorate them.
 
-  const systemInstruction = `You are a Master Cinematography Prompt Engineer for Veo 3 video generation.
-For each input scene, output a JSON object with these fields. The user's code assembles them into the final video prompt. OUTPUT STRICTLY VALID JSON.
+FIELD GUIDE:
+- sceneId: integer, matches the input id.
+- camera_angle / shot_size / camera_movement: 1-3 words each. Medium or Wide framing, neutral angle, and exactly ONE gentle camera move (or static). Never a tight close-up on hands or faces.
+- setting: the place, short (≤12 words). time: era + time of day, short.
+- character: who is on screen with ethnicity + era clothing; use "" when the scene has NO people.
+- action: the heart of the prompt (~40-70 words) — ONE single, natural, graceful, SIMPLE action unfolding smoothly across the 8 seconds. Show HOW it looks: posture, pace, gaze, the gentle motion around it. Must be ERROR-FREE (see NO ERRORS).
+- style: short style + color mood, ending exactly with "Rendered in the style of ${finalStyleStr}."
+- _subjects: comma-separated CANONICAL_NAMEs present (internal).
 
-OUTPUT FIELDS (all required, all in ENGLISH — respect the WORD BUDGETS, they protect output quality):
-- sceneId          (integer, matches input id)
-- shot             (shot size + angle + lens + DOF — pick from GLOSSARY vocabulary)
-- narrative        (ONE flowing paragraph, MAX 50 words excluding VERBATIM_BLOCKs — the core of the prompt: subject + ACTION. See NARRATIVE RULE below.)
-- expression       (MAX 8 words; "" if no person on screen)
-- setting          (MAX 20 words: period, location, time, weather, at most 3-4 named objects + one environmental motion. MUST NOT repeat anything already in 'narrative'.)
-- lighting         (MAX 10 words: direction, Kelvin, contrast only — NO quality jargon here)
-- camera_motion    (one gentle move — pick from GLOSSARY vocabulary)
-- style_tail       (the ONLY home for quality anchors + COLOR GRADING; MUST end with: "Rendered in the style of ${finalStyleStr}.")
-- _validation_subjects (comma-separated list of every CANONICAL_NAME present in this scene)
+ONE SCENE PER PROMPT (critical): each prompt is a SINGLE continuous moment — ONE place, ONE time, ONE action. Never change location, never jump in time, never chain actions ("then..."), never a montage or split screen. If the input text implies several moments, pick the single most visual one and silently drop the rest.
+
+NO ERRORS (this is the #1 priority — a clean simple shot always beats a fancy one):
+- ONE continuous whole-body action at a calm pace (walking, carrying, rowing, sweeping, loading, planting, speaking calmly, watching). No fast, intricate, or fiddly motion; no fine finger work in close-up.
+- Objects stay WHOLE the entire shot — never cut, peel, slice, break, crack, or open them; never a half-done state. If someone holds a fruit/egg/bottle/parcel, it stays intact.
+- An object appears in only ONE place in the frame (in a hand OR on a surface, never both).
+- At most 3-5 people in sharp focus; larger groups only as soft, out-of-focus background.
+- Every person carries an explicit ethnicity + era-appropriate clothing (default: a white American, era-correct, when the story doesn't specify).
+- For anything violent, show a calm AFTERMATH with ordinary people instead of the violent instant.
+- Never show maps, documents, newspapers, readable text/labels/signs, or paperwork as the subject.
+
+REALISM: aim for footage that looks genuinely filmed — natural imperfect light, true-to-life color. NEVER use film-medium words ("film grain", "shot on film", "35mm film", "archival/vintage film") — Veo draws literal film borders, sprocket holes, frame numbers and scratches onto the image. Never "hyper-realistic / 8K / flawless" either (they cause plastic CGI skin).
+
+VARIETY ACROSS SCENES (stock thinking — do not bore the viewer): when the same topic recurs, do NOT repeat the same composition. Rotate the place, the time/era, and the angle. E.g. for "a leader gives a speech": one scene is the speaker, the next is city crowds listening, the next is a rural family gathered by a radio, the next is a lone worker pausing to listen — each its own single moment. Use the VISUAL_PLAN below when provided.
+
+VISUAL PLAN: if a scene input has "VISUAL_PLAN", the art director assigned it to keep the whole video varied — FOLLOW it. Build the scene on that FORM / PLACE / ERA / SHOT. If PERSON is "none", make it an object/place scene with character="". If PERSON names someone, that person + action is the human element. The scene's own text still gives the story meaning. If the plan ever conflicts with a safety rule above, the safety rule wins.
 
 ${CELEBRITY_SAFETY_RULE}
 
-${SINGLE_MOMENT_RULE}
-Apply this to the 'narrative', 'setting' and 'camera_motion' fields: depict ONLY the single selected moment. If the input scene text implies several locations or actions, pick the one most important moment and write the prompt for that alone — silently drop the rest.
-
-${ANTI_ARTIFACT_RULE}
-Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person ONE visible continuous ACTION (from SAFE_ACTIONS — working, not posing), give the camera exactly ONE gentle slow move (or static), and layer environmental motion on top. Being artifact-free outranks looking cinematic.
-
-${STORYTELLING_RULE}
-Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': give the viewer ONE clear subject per scene — people when they genuinely add interest, otherwise the object/place itself in a varied form/setting/era (per S2/S2b, never a repeated composition) — never paperwork/maps/text props, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7). NEVER depict the instant an object changes form — choose BEFORE or AFTER, object in ONE place only (per S8).
-
-VISUAL PLAN (BINDING ART DIRECTION): when a scene input includes "VISUAL_PLAN", the art director assigned it to keep the whole video varied — treat it as BINDING. Build the scene EXACTLY on that FORM of the subject, in that PLACE and ERA, with that SHOT. If PERSON says "none", write an object/place-only scene: no people anywhere, empty 'expression', kept alive by environmental motion. If PERSON names someone, that exact person + action is the scene's human element. The scene's own text still supplies the story meaning; the plan controls the composition. If the plan ever contradicts a safety rule (SINGLE-MOMENT, ANTI-ARTIFACT, S8), the safety rule wins.
-
-CONTEXT: ${globalContext}
-
-COLOR GRADING (fold into 'style_tail' ONLY — never repeat in 'lighting'): ${colorMoodDesc}
-${techDetailsStr}
-
-${CINEMATOGRAPHY_GLOSSARY}
-
-${charProfiles ? `
-=== MASTER CHARACTER DICTIONARY ===
+${charProfiles ? `=== CHARACTERS (keep them visually consistent across scenes) ===
 ${charProfiles}
-=== END DICTIONARY ===
-
-NARRATIVE RULE — how to write the 'narrative' field when characters are present:
-The 'narrative' is ONE flowing paragraph. It must weave each character's VERBATIM_BLOCK together with ONE visible, continuous ACTION each — NOT list all characters first and actions after. Every character should be DOING something the viewer can watch (pick from SAFE_ACTIONS: carrying, walking, sweeping, loading, riding, rowing...); a still pose only when the scene demands stillness. Calm pace, ONE action per person, no fast/intricate/multi-step motion. Interaction between people stays minimal.
-
-PATTERN:
-  "[Character A VERBATIM_BLOCK] [performs one visible ACTION], while [Character B VERBATIM_BLOCK] [performs one visible ACTION]; [Character A bare name] [continues that same single ACTION]."
-
-HOW TO EMBED VERBATIM_BLOCK:
-  - Take the exact string from the VERBATIM_BLOCK field in the Character Dictionary (the string inside the quotes "...").
-  - Insert it at the first natural point in the sentence where the character is introduced.
-  - Do NOT add, remove, or rephrase any word. Copy it character-for-character.
-  - Second and later mentions of the same character: use only the bare CANONICAL_NAME — no pronoun, no generic noun.
-
-EXAMPLE (3-character scene, follow this narrative pattern — note the calm, single actions):
-  Dictionary:
-    CANONICAL_NAME="Edmund", VERBATIM_BLOCK: "Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat)"
-    CANONICAL_NAME="Lady Whitmore", VERBATIM_BLOCK: "Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker)"
-    CANONICAL_NAME="Clara", VERBATIM_BLOCK: "Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown)"
-
-  ✅ CORRECT narrative (medium-wide, everyone calmly IN ACTION — one action each):
-    "In a medium-wide framing, Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat) walks slowly across the hall carrying a silver candlestick, while Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker) sets a porcelain teacup down on the side table and Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown) draws the heavy curtain open at the window; candle flames flicker and dust drifts in the soft light as Edmund continues Edmund's steady walk toward the doorway."
-
-  ❌ WRONG (all descriptions first, actions after):
-    "Edmund (distinguished lord). Lady Whitmore (stately matriarch). Clara (slender woman). Edmund stands... Lady Whitmore sits... Clara waits."
-  ❌ WRONG (shortened VERBATIM_BLOCK):
-    "Edmund (English lord in navy tailcoat) stands..."  — missing age, hair, jaw, frame.
-  ❌ WRONG (pronoun used):
-    "Edmund stands. He turns his head..." — must be "Edmund slowly turns Edmund's head".
-  ❌ WRONG (busy / fast / intricate action):
-    "Edmund strides across the hall gesturing sharply while Clara hurriedly counts coins in close-up." — too much motion, tight hand work → artifacts.
-
-ABSOLUTE NAMING RULES:
-A. Every CANONICAL_NAME in _validation_subjects MUST appear in 'narrative' at least once with its full VERBATIM_BLOCK on first mention.
-B. VERBATIM_BLOCK must be copied exactly — every word, every comma. No shortening.
-C. After first mention: bare CANONICAL_NAME only. NEVER pronouns (he/she/they/him/her/hắn/nó/cô ấy/anh ấy) or DIFFERENT generic nouns ("the man", "the woman", "the figure"). A CANONICAL_NAME that is itself an epithet (e.g. "the Silver-Bearded Statesman") is the character's NAME — repeat it verbatim, never shorten or vary it.
-D. If input has REQUIRED_FULL_DESCRIPTIONS, every string there must appear verbatim inside 'narrative'.
-` : `
-NARRATIVE RULE (no listed characters):
-Write a calm, single-subject paragraph describing ONE main subject (prefer an object, prop, or environment) held in a stable shot over 8 seconds. Introduce the subject with full visual detail on first mention. Keep it alive with environmental motion (smoke, steam, wind, ripples, flickering light) rather than complex action.
-`}
-
-ABSOLUTE MANDATORY RULES:
-1. ENGLISH ONLY in every field. DO NOT use Vietnamese anywhere.
-1b. NO REAL-PERSON NAMES: never output the real name of any public figure/celebrity in any field — use only the invented CANONICAL_NAMEs from the dictionary or a generic descriptor (see REAL-PERSON NAME SAFETY). Their physical description is fine; their real name is not.
-2. NO HALLUCINATION: do not invent characters, actions, or props not in the input.
-3. STYLE TAIL must end exactly with: "Rendered in the style of ${finalStyleStr}."
-4. COLOR GRADING and quality anchors (HDR, pro color grading, realistic textures...) live in 'style_tail' ONLY — never duplicated into 'lighting' or 'setting'. 'lighting' stays a bare ≤10-word light description.
-5. No word "cut" anywhere. No location change, no time jump, no second action — ONE continuous moment only (see SINGLE-MOMENT RULE).
-6. ARTIFACT-FREE OVER CINEMATIC: obey the ANTI-ARTIFACT RULE first. Pull vocabulary from the STOCK-SAFE GLOSSARY; keep framing Medium/Wide, one gentle slow camera move, actions simple. Never trade safety for flair.
-6b. REALISM OVER GLOSS: the target look is real archival/documentary footage shot on film — NOT a polished CGI render. In 'style_tail' favor grounded anchors (subtle film grain, natural imperfect lighting, true-to-life color, slight lens softness). NEVER write "hyper-realistic", "ultra HD", "8K", "flawless", "perfect", "stunning" — those push the model toward plastic CGI skin and over-smooth gradients.
-${options?.audioMode !== 'keep' ? '7. AMBIENT-ONLY AUDIO: describe ONLY visuals. No dialogue, quotes, on-screen text, voiceover. If sound is implied, treat it as quiet ambient environmental sound only — no dialogue, no music.' : ''}
-DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines the subject or its ACTION, (b) pins down something the model would otherwise guess wrong (era, ethnicity, material contrast, object state), or (c) sets style (style_tail only). Longer is NOT better: past ~120 content words the subject and ACTION lose weight and the output drifts.
-- narrative preserves every VERBATIM_BLOCK in full, but otherwise MAX 50 words — one ACTION per subject, no padding.
-- BAN atmosphere filler: no "evoking/adding a somber, contemplative atmosphere"-type phrases. At most ONE mood word per prompt.
-- Never repeat an idea across fields — each fact appears exactly ONCE in the whole prompt.`;
+When a character appears, copy their VERBATIM_BLOCK (the text inside the quotes) into 'character' EXACTLY as written; after the first mention use the bare CANONICAL_NAME. Never use pronouns or a different generic noun for them. NEVER write their ORIGINAL_REFERENCE real name in any field.
+` : ''}
+CONTEXT: ${globalContext}
+COLOR MOOD (fold into 'style'): ${colorMoodDesc}
+${techDetailsStr}
+${options?.audioMode !== 'keep' ? 'AUDIO: describe visuals only — no dialogue, no on-screen text, no music.' : ''}
+Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese.`;
 
   const PROMPT_BATCH_SIZE = 5;
   const batches: Scene[][] = [];
   for (let i = 0; i < segment.scenes.length; i += PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + PROMPT_BATCH_SIZE));
 
-  // 👉 Cue KHẲNG ĐỊNH đặt trước, rồi mới tới danh sách phủ định NGẮN & CỤ THỂ — theo
-  // đúng cách VEO 3 phản hồi tốt nhất. Đuôi negative CHỌN THEO NGỮ CẢNH (Fix D):
-  // cảnh có người → đuôi anatomy/hands; cảnh vật-thể-thuần → đuôi riêng cấm tay người.
+  // 👉 Ghép thành PROMPT JSON gọn 8 trường (đúng yêu cầu người dùng). Dồn mô tả ở
+  // 'action', các trường khác ngắn. Đảm bảo 'style' kết thúc bằng câu neo phong cách.
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
     const dotEnd = (s: string) => (!s ? '' : (/[.!?]$/.test(s) ? s : s + '.'));
-    const segs: string[] = [];
-    if (clean(p.shot)) segs.push(dotEnd(clean(p.shot)));
-    if (clean(p.narrative)) segs.push(dotEnd(clean(p.narrative)));
-    if (clean(p.expression)) segs.push(dotEnd("Expression: " + clean(p.expression)));
-    if (clean(p.setting)) segs.push(dotEnd("Setting: " + clean(p.setting)));
-    if (clean(p.lighting)) segs.push(dotEnd("Lighting: " + clean(p.lighting)));
-    if (clean(p.camera_motion)) segs.push(dotEnd("Camera: " + clean(p.camera_motion)));
-    let tail = clean(p.style_tail);
+    let style = clean(p.style);
     const anchor = `Rendered in the style of ${finalStyleStr}.`;
-    if (!tail.toLowerCase().includes(anchor.toLowerCase())) {
-      tail = (tail ? dotEnd(tail) + ' ' : '') + anchor;
+    if (!style.toLowerCase().includes('rendered in the style of')) {
+      style = (style ? dotEnd(style) + ' ' : '') + anchor;
     } else {
-      tail = dotEnd(tail);
+      style = dotEnd(style);
     }
-    segs.push(tail);
-    const content = segs.join(' ');
-    return `${content} ${pickNegativeTail(p, content)}`;
+    const obj = {
+      camera_angle: clean(p.camera_angle),
+      shot_size: clean(p.shot_size),
+      camera_movement: clean(p.camera_movement),
+      setting: clean(p.setting),
+      time: clean(p.time),
+      character: clean(p.character),
+      action: clean(p.action),
+      style,
+    };
+    return JSON.stringify(obj, null, 2);
   };
 
   const executeWithProvider = async (providerId: string): Promise<PromptItem[]> => {
@@ -1550,49 +1519,33 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
         return canonicalNames.map(name => {
           const c = characters.find(x => (x.promptName?.trim() || x.name.trim()) === name);
           if (!c) return name;
-          const parts: string[] = [];
-          if (c.visualDescription?.trim()) parts.push(c.visualDescription.trim());
-          const eth = c.ethnicity?.trim().toLowerCase();
-          if (eth && !['n/a','none','unspecified','không','null','undefined','""'].includes(eth)) parts.push(c.ethnicity!.trim());
-          const clo = c.clothing?.trim().toLowerCase();
-          if (clo && !['n/a','none','unspecified','không','null','undefined','""'].includes(clo)) parts.push(c.clothing!.trim());
+          const parts = cleanCharacterParts(c);
           return parts.length ? `${name} (${parts.join(', ')})` : name;
         });
       };
 
       const validateNameAndRichness = (promptText: string, requiredNames: string[]): { ok: boolean; reason: string } => {
         const lower = promptText.toLowerCase();
-        // LƯỚI CHẶN CỨNG: nếu tên thật (originalName, khác với tên hư cấu) lọt vào prompt → loại, tạo lại.
-        // 👉 So khớp KHÔNG DẤU + biên từ (bắt cả "Son Tung" khi danh bạ ghi "Sơn Tùng"), bỏ giới hạn ≥4 ký tự.
+        // LƯỚI CHẶN CỨNG 1: tên người thật (originalName) lọt vào prompt → loại, tạo lại.
         const foldedPrompt = foldText(promptText);
         for (const c of charIndex) {
           if (c.originalLower && foldText(c.originalLower) !== foldText(c.canonical) && containsFoldedName(foldedPrompt, c.originalLower)) {
             return { ok: false, reason: `leaked real name "${c.originalLower}" — must use canonical "${c.canonical}"` };
           }
         }
-        // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ đọc được/bạo lực/đám đông dày đặc).
-        // Bỏ đuôi negative (cả 2 biến thể) trước khi quét — đuôi chứa chính các từ cấm.
-        const contentOnly = stripNegativeTails(promptText);
-        const bannedVis = findBannedVisual(contentOnly);
+        // LƯỚI CHẶN CỨNG 2: hình ảnh cấm về chính sách (bạo lực/giấy tờ/chữ/đám đông).
+        const bannedVis = findBannedVisual(promptText);
         if (bannedVis) return { ok: false, reason: `banned visual "${bannedVis}" — retell with people + setting instead` };
-        // 👉 Chống prompt phình (pha loãng chủ thể + hành động): vượt ngân sách từ →
-        // tạo lại gọn hơn. Trần co giãn theo số nhân vật (VERBATIM_BLOCK chiếm chỗ hợp lệ).
-        const contentWords = contentOnly.trim().split(/\s+/).length;
-        const wordCap = 150 + 25 * requiredNames.length;
-        if (contentWords > wordCap) return { ok: false, reason: `prompt too long (${contentWords} > ${wordCap} words) — tighten setting/lighting, cut filler` };
+        // LƯỚI CHẶN CỨNG 3: nhân vật bắt buộc của cảnh phải có mặt trong prompt.
         for (const name of requiredNames) {
           if (!lower.includes(name.toLowerCase())) return { ok: false, reason: `missing name "${name}"` };
-          const c = charByCanonical[name];
-          if (!c || c.descTokens.length === 0) continue;
-          const matched = c.descTokens.filter(t => lower.includes(t)).length;
-          const ratio = matched / c.descTokens.length;
-          if (ratio < 0.55) return { ok: false, reason: `description coverage for "${name}" only ${(ratio*100).toFixed(0)}%` };
         }
         return { ok: true, reason: '' };
       };
 
       const hasAllRequiredFields = (pi: any): boolean => {
-        const need = ["sceneId", "shot", "narrative", "setting", "lighting", "camera_motion", "style_tail"];
+        // 'character' được phép rỗng (cảnh không người) nên không tính vào đây.
+        const need = ["sceneId", "camera_angle", "shot_size", "camera_movement", "setting", "time", "action", "style"];
         return need.every(k => pi[k] !== undefined && pi[k] !== null && (typeof pi[k] !== 'string' || pi[k].trim().length > 0));
       };
 
@@ -1611,39 +1564,22 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
       };
 
       const pushAccepted = (pi: any, scene: Scene) => {
-        // 👉 CHỐT CHẶN CUỐI (tất định): mọi đường ra — vòng batch, vòng 3 lọt lưới,
-        // cứu hộ từng cảnh, fallback copy Bước 2 — đều đi qua đây.
-        // 1) Tách nội dung khỏi đuôi negative để các bước sửa không đụng vào đuôi.
-        const assembled = assembleFinalPrompt(pi);
-        const usedTail = NEGATIVE_TAILS.find(t => assembled.includes(t)) || '';
-        let content = usedTail ? assembled.split(usedTail).join(' ').trim() : assembled;
-        // 2) Sửa tất định trên nội dung: danh từ "peel"→"skin" (Fix B), đồng hồ điện
-        //    tử → analog trơn (Fix E).
-        content = fixDigitalClock(fixPeelNoun(content));
-        // 3) Nối câu neo: vật rủi ro bị cầm/nhấc HOẶC nằm tĩnh mà thiếu neo trạng thái
-        //    → neo "nguyên vẹn + exactly one" (Fix A+C); mặt đồng hồ chưa neo trơn số
-        //    → neo "blank, no numerals" (Fix E). Neo chèn TRƯỚC đuôi negative.
-        const anchors: string[] = [];
-        const stateAnchor = buildStateAnchor(content);
-        if (stateAnchor) anchors.push(stateAnchor);
-        const clockAnchor = buildClockAnchor(content);
-        if (clockAnchor) anchors.push(clockAnchor);
-        let finalPromptStr = [content, ...anchors, usedTail].filter(Boolean).join(' ');
+        // 👉 CHỐT CHẶN CUỐI (tất định) — mọi đường ra đều qua đây. Đơn giản:
+        // 1) Nhét hậu tố người dùng (nếu có) vào cuối 'style'.
         if (customPromptSuffix.trim()) {
-           const suffix = customPromptSuffix.trim();
-           if (finalPromptStr.endsWith('.')) {
-               finalPromptStr = finalPromptStr.slice(0, -1) + ", " + suffix + ".";
-           } else {
-               finalPromptStr += ", " + suffix;
-           }
+          const suffix = customPromptSuffix.trim();
+          pi = { ...pi, style: `${(pi.style || '').trim()} ${suffix}`.trim() };
         }
-        // 4) Quét tên thật SAU CÙNG để cả suffix người dùng gõ cũng được lọc.
-        finalPromptStr = scrubRealNames(finalPromptStr, characters);
+        // 2) Ghép thành JSON, rồi sửa tất định trên chuỗi JSON: xóa từ "phim nhựa"
+        //    (chống viền phim/xước) và quét tên người thật (chống lộ danh tính).
+        let json = assembleFinalPrompt(pi);
+        json = fixFilmLook(json);
+        json = scrubRealNames(json, characters);
         validItems.push({
           sceneId: scene.id,
           sourceText: scene.sourceText,
           originalDescription: scene.visualDescription,
-          generatedPrompt: `${scene.id}. ${finalPromptStr}`
+          generatedPrompt: json
         });
       };
 
@@ -1695,7 +1631,7 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
               );
               const list = Array.isArray(generated) ? generated : [];
               const pi = list.find(g => g?.sceneId === scene.id) || list[0];
-              if (pi && typeof pi.narrative === 'string' && pi.narrative.trim().length > 0) {
+              if (pi && typeof pi.action === 'string' && pi.action.trim().length > 0) {
                 pushAccepted({ ...pi, sceneId: scene.id }, scene);
                 rescued = true;
               }
@@ -1713,56 +1649,17 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
         for (const scene of pendingBatch) {
           pushAccepted({
             sceneId: scene.id,
-            narrative: scene.visualDescription,
+            action: scene.visualDescription,
+            character: scene.characterDetails || '',
             setting: scene.settingTime,
-            style_tail: ''
+            time: '',
+            camera_angle: 'eye-level',
+            shot_size: 'medium shot',
+            camera_movement: 'static',
+            style: ''
           }, scene);
         }
         pendingBatch = [];
-      }
-
-      // 👉 B3.5 — AUDIT PASS: soi lại cả mẻ 1 lần (checklist veo-prompt-audit nhúng
-      // trong AUDIT_INSTRUCTION). Chỉ nhận bản viết lại cho lỗi "severe" và CHỈ khi
-      // bản đó vượt qua đủ lưới tất định — không đạt thì giữ bản gốc. Audit là tầng
-      // phụ trợ: lỗi API → bỏ qua trong im lặng, không chặn kết quả.
-      if (auditEnabled && validItems.length > 0) {
-        try {
-          onStatusUpdate?.(`Đang kiểm định chất lượng mẻ ${index + 1}...`);
-          const sceneById = new Map(batch.map(s => [s.id, s]));
-          const auditPayload = validItems.map(vi => {
-            const m = vi.generatedPrompt.match(/^\d+\.\s([\s\S]*)$/);
-            const body = m ? m[1] : vi.generatedPrompt;
-            return { sceneId: vi.sceneId, content: stripNegativeTails(body).trim() };
-          });
-          const audited = await callAISafe<any[]>(
-            `Audit these prompts:\n${JSON.stringify(auditPayload)}`,
-            AUDIT_INSTRUCTION, AUDIT_SCHEMA, 0.2, limitPromptConcurrency, providerId
-          );
-          for (const a of (Array.isArray(audited) ? audited : [])) {
-            if (a?.severity !== 'severe' || typeof a.fixedContent !== 'string' || !a.fixedContent.trim()) continue;
-            const idx = validItems.findIndex(vi => vi.sceneId === a.sceneId);
-            const scene = sceneById.get(a.sceneId);
-            if (idx === -1 || !scene) continue;
-            // Dựng lại đúng pipeline tất định như pushAccepted.
-            let content = fixDigitalClock(fixPeelNoun(a.fixedContent.trim().replace(/\s+/g, ' ')));
-            if (!content.toLowerCase().includes('rendered in the style of')) {
-              content = `${/[.!?]$/.test(content) ? content : content + '.'} Rendered in the style of ${finalStyleStr}.`;
-            }
-            const anchors: string[] = [];
-            const sa = buildStateAnchor(content); if (sa) anchors.push(sa);
-            const ca = buildClockAnchor(content); if (ca) anchors.push(ca);
-            // Đuôi negative chọn LẠI theo nội dung mới (bản sửa có thể thêm/bớt người).
-            let candidate = [content, ...anchors, pickNegativeTail({}, content)].join(' ');
-            if (customPromptSuffix.trim()) {
-              const suffix = customPromptSuffix.trim();
-              candidate = candidate.endsWith('.') ? candidate.slice(0, -1) + ', ' + suffix + '.' : candidate + ', ' + suffix;
-            }
-            candidate = scrubRealNames(candidate, characters);
-            const verdict = validateNameAndRichness(candidate, detectPresentChars(scene));
-            if (!verdict.ok) continue;                     // bản sửa không sạch hơn → giữ bản gốc
-            validItems[idx] = { ...validItems[idx], generatedPrompt: `${scene.id}. ${candidate}` };
-          }
-        } catch { /* audit phụ trợ — bỏ qua */ }
       }
 
       return validItems;
