@@ -474,10 +474,10 @@ const PROMPT_SCHEMA = {
     properties: {
       sceneId: { type: Type.INTEGER },
       shot: { type: Type.STRING, description: "Shot size + neutral angle + lens + DOF, Medium/Wide preferred. e.g. 'Static medium-wide eye-level shot, 35mm, moderate depth of field'. Never a tight close-up on hands." },
-      narrative: { type: Type.STRING, description: "One flowing paragraph. Introduce each character with their VERBATIM_BLOCK inline (first mention only), then give each ONE visible, continuous ACTION in progress — woven together naturally. Prefer real whole-body ACTIONS (carrying, walking, sweeping, rowing, loading, riding) over static poses; calm pace, no fast or intricate motion. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) carries a wicker basket across the courtyard as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) leads a grey horse toward the stable gate.' Do NOT list all characters first then write actions separately." },
-      expression: { type: Type.STRING, description: "Subtle facial expression / emotional beat per character. Empty string if no person on screen." },
-      setting: { type: Type.STRING, description: "Environment, period, weather, time of day, props in frame, plus any gentle environmental motion (smoke, steam, candle flicker, wind)." },
-      lighting: { type: Type.STRING, description: "Light direction, color temperature, contrast, key/fill/rim, named scheme. Prefer soft over hard light." },
+      narrative: { type: Type.STRING, description: "One flowing paragraph, MAX 50 words (VERBATIM_BLOCKs not counted). Introduce each character with their VERBATIM_BLOCK inline (first mention only), then give each ONE visible, continuous ACTION in progress — woven together naturally. Prefer real whole-body ACTIONS (carrying, walking, sweeping, rowing, loading, riding) over static poses; calm pace, no fast or intricate motion. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) carries a wicker basket across the courtyard as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) leads a grey horse toward the stable gate.' Do NOT list all characters first then write actions separately." },
+      expression: { type: Type.STRING, description: "MAX 8 words. Subtle facial expression per character. Empty string if no person on screen." },
+      setting: { type: Type.STRING, description: "MAX 20 words: period, location, time of day, weather, at most 3-4 named objects in frame + one environmental motion. MUST NOT repeat anything already said in 'narrative'." },
+      lighting: { type: Type.STRING, description: "MAX 10 words: light direction, color temperature, contrast only (e.g. 'soft window daylight, 5500K, low contrast'). NO quality jargon here — HDR/color grading/textures belong ONLY in style_tail." },
       camera_motion: { type: Type.STRING, description: "Exactly ONE gentle, slow, smooth camera move per shot: slow push-in, slow pull-back, slow pan left/right, gentle lateral drift, or slow tilt. Static lock-off also allowed. Never combine moves; never orbit, crane, fast tracking, handheld shake, whip pan, zoom, or drone." },
       style_tail: { type: Type.STRING, description: "Style summary + quality anchors. MUST end with the exact phrase: Rendered in the style of <styleSummary>." },
       _validation_subjects: { type: Type.STRING, description: "Comma-separated list of every CANONICAL_NAME that appears in this scene. Used for internal validation only." }
@@ -1124,15 +1124,15 @@ export const generatePromptsForSingleSegment = async (
   const systemInstruction = `You are a Master Cinematography Prompt Engineer for Veo 3 video generation.
 For each input scene, output a JSON object with these fields. The user's code assembles them into the final video prompt. OUTPUT STRICTLY VALID JSON.
 
-OUTPUT FIELDS (all required, all in ENGLISH):
+OUTPUT FIELDS (all required, all in ENGLISH — respect the WORD BUDGETS, they protect output quality):
 - sceneId          (integer, matches input id)
 - shot             (shot size + angle + lens + DOF — pick from GLOSSARY vocabulary)
-- narrative        (ONE flowing paragraph — the core of the prompt. See NARRATIVE RULE below.)
-- expression       (facial expression / emotional beat per character; "" if no person on screen)
-- setting          (period, location, weather, time of day, props, environmental texture)
-- lighting         (direction, Kelvin, hardness, scheme — must integrate COLOR GRADING)
-- camera_motion    (camera movement across the 8 seconds — pick from GLOSSARY vocabulary)
-- style_tail       (style summary + quality anchors; MUST end with: "Rendered in the style of ${finalStyleStr}.")
+- narrative        (ONE flowing paragraph, MAX 50 words excluding VERBATIM_BLOCKs — the core of the prompt: subject + ACTION. See NARRATIVE RULE below.)
+- expression       (MAX 8 words; "" if no person on screen)
+- setting          (MAX 20 words: period, location, time, weather, at most 3-4 named objects + one environmental motion. MUST NOT repeat anything already in 'narrative'.)
+- lighting         (MAX 10 words: direction, Kelvin, contrast only — NO quality jargon here)
+- camera_motion    (one gentle move — pick from GLOSSARY vocabulary)
+- style_tail       (the ONLY home for quality anchors + COLOR GRADING; MUST end with: "Rendered in the style of ${finalStyleStr}.")
 - _validation_subjects (comma-separated list of every CANONICAL_NAME present in this scene)
 
 ${CELEBRITY_SAFETY_RULE}
@@ -1148,7 +1148,7 @@ Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': give the viewer
 
 CONTEXT: ${globalContext}
 
-COLOR GRADING: ${colorMoodDesc}
+COLOR GRADING (fold into 'style_tail' ONLY — never repeat in 'lighting'): ${colorMoodDesc}
 ${techDetailsStr}
 
 ${CINEMATOGRAPHY_GLOSSARY}
@@ -1203,11 +1203,14 @@ ABSOLUTE MANDATORY RULES:
 1b. NO REAL-PERSON NAMES: never output the real name of any public figure/celebrity in any field — use only the invented CANONICAL_NAMEs from the dictionary or a generic descriptor (see REAL-PERSON NAME SAFETY). Their physical description is fine; their real name is not.
 2. NO HALLUCINATION: do not invent characters, actions, or props not in the input.
 3. STYLE TAIL must end exactly with: "Rendered in the style of ${finalStyleStr}."
-4. 'lighting' must integrate the COLOR GRADING listed above.
+4. COLOR GRADING and quality anchors (HDR, pro color grading, realistic textures...) live in 'style_tail' ONLY — never duplicated into 'lighting' or 'setting'. 'lighting' stays a bare ≤10-word light description.
 5. No word "cut" anywhere. No location change, no time jump, no second action — ONE continuous moment only (see SINGLE-MOMENT RULE).
 6. ARTIFACT-FREE OVER CINEMATIC: obey the ANTI-ARTIFACT RULE first. Pull vocabulary from the STOCK-SAFE GLOSSARY; keep framing Medium/Wide, one gentle slow camera move, actions simple. Never trade safety for flair.
 ${options?.audioMode !== 'keep' ? '7. AMBIENT-ONLY AUDIO: describe ONLY visuals. No dialogue, quotes, on-screen text, voiceover. If sound is implied, treat it as quiet ambient environmental sound only — no dialogue, no music.' : ''}
-DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays lean — one calm action per subject, no padding. Other fields: 1-3 tight sentences each.`;
+DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines the subject or its ACTION, (b) pins down something the model would otherwise guess wrong (era, ethnicity, material contrast, object state), or (c) sets style (style_tail only). Longer is NOT better: past ~120 content words the subject and ACTION lose weight and the output drifts.
+- narrative preserves every VERBATIM_BLOCK in full, but otherwise MAX 50 words — one ACTION per subject, no padding.
+- BAN atmosphere filler: no "evoking/adding a somber, contemplative atmosphere"-type phrases. At most ONE mood word per prompt.
+- Never repeat an idea across fields — each fact appears exactly ONCE in the whole prompt.`;
 
   const PROMPT_BATCH_SIZE = 5;
   const batches: Scene[][] = [];
@@ -1215,7 +1218,7 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
 
   // 👉 Cue KHẲNG ĐỊNH (consistent anatomy...) đặt trước, rồi mới tới danh sách phủ định
   // NGẮN & CỤ THỂ nhắm đúng lỗi hay gặp — theo đúng cách VEO 3 phản hồi tốt nhất.
-  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, duplicated objects, objects splitting or morphing, objects peeling or opening on their own, oversaturated colors, plastic skin, readable text, watermark, caption, maps, documents, newspapers, calendar pages, dense crowds.";
+  const NEGATIVE_TAIL = "Consistent anatomy, natural hands, stable proportions. Avoid: extra or deformed limbs and fingers, face warping, morphing, duplicated people or objects, objects peeling or splitting on their own, flicker, plastic skin, readable text, watermark, maps or documents, dense crowds.";
 
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
@@ -1287,8 +1290,14 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
         }
         // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ đọc được/bạo lực/đám đông dày đặc).
         // Bỏ phần NEGATIVE_TAIL trước khi quét — đuôi negative chứa chính các từ cấm.
-        const bannedVis = findBannedVisual(promptText.replace(NEGATIVE_TAIL, ''));
+        const contentOnly = promptText.replace(NEGATIVE_TAIL, '');
+        const bannedVis = findBannedVisual(contentOnly);
         if (bannedVis) return { ok: false, reason: `banned visual "${bannedVis}" — retell with people + setting instead` };
+        // 👉 Chống prompt phình (pha loãng chủ thể + hành động): vượt ngân sách từ →
+        // tạo lại gọn hơn. Trần co giãn theo số nhân vật (VERBATIM_BLOCK chiếm chỗ hợp lệ).
+        const contentWords = contentOnly.trim().split(/\s+/).length;
+        const wordCap = 150 + 25 * requiredNames.length;
+        if (contentWords > wordCap) return { ok: false, reason: `prompt too long (${contentWords} > ${wordCap} words) — tighten setting/lighting, cut filler` };
         for (const name of requiredNames) {
           if (!lower.includes(name.toLowerCase())) return { ok: false, reason: `missing name "${name}"` };
           const c = charByCanonical[name];
