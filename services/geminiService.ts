@@ -16,6 +16,9 @@ export interface PromptOptions {
   audioMode?: 'remove' | 'keep';
   // 👉 Bước 2.5 — Visual Planner (chống lặp bố cục xuyên mẻ/phân đoạn). Mặc định BẬT.
   visualPlanner?: boolean;
+  // 👉 Bước 3.5 — Audit pass (soi lại prompt đã lắp ráp, lỗi Nặng thì tự viết lại).
+  // Không set → tự theo gói: paid BẬT, free TẮT (tiết kiệm lượt gọi khi bị giới hạn).
+  auditPass?: boolean;
 }
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
@@ -1040,6 +1043,47 @@ const planVisualsForScenes = async (
   return plans;
 };
 
+// ============================================================================
+// 👉 BƯỚC 3.5 — AUDIT PASS (chốt kiểm cuối trong app, nhúng checklist của skill
+// veo-prompt-audit). Mỗi mẻ prompt đã lắp ráp xong được 1 lần soi lại bằng AI:
+// chỉ chấm "severe" cho lỗi chắc chắn fail/bị chặn, kèm bản viết lại phần nội
+// dung. Bản viết lại PHẢI vượt qua đủ lưới tất định (scrub tên, banned visuals,
+// đủ tên nhân vật, trần từ) — không đạt thì GIỮ BẢN GỐC, không bao giờ tệ đi.
+// ============================================================================
+const AUDIT_SCHEMA = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      sceneId: { type: Type.INTEGER },
+      severity: { type: Type.STRING, enum: ['ok', 'severe'], description: "'severe' ONLY for guaranteed policy-block or render-fail; everything else is 'ok'." },
+      problem: { type: Type.STRING, description: "Quote the exact offending phrase (empty if ok)." },
+      fixedContent: { type: Type.STRING, description: "For 'severe' only: full rewritten CONTENT (see rules). Empty string if ok." }
+    },
+    required: ['sceneId', 'severity']
+  }
+};
+const AUDIT_INSTRUCTION = `You are a strict PRE-RENDER AUDITOR for Veo 3 video prompts (8-second historical B-roll). For each input prompt, decide severity:
+
+"severe" — the render WILL be refused or WILL break. Only these count:
+- A real public figure's name written directly.
+- Violence/gore on screen: weapon aimed or fired, corpse, dead body, blood, wound, explosion, bombs falling, torture, execution, massacre, warplanes/bombers overhead.
+- Paperwork or readable text AS THE SUBJECT: map, document, newspaper, headline, typewriter, ledger, calendar, sign or label meant to be read.
+- A transformation moment: the instant an object changes form (cutting, chopping, peeling, splitting, cracking, grinding, crushing, plucking, reaping...).
+- A partial/hybrid object state: half-peeled, half-cut, half-eaten, partially unwrapped.
+- The featured object shown BOTH at its source AND in someone's hands in the same frame.
+- Dense crowd in sharp focus: hundreds/thousands, "sea of faces", packed masses.
+- Camera: more than ONE move, or any orbit / crane / whip pan / handheld shake / zoom / drone / POV walking.
+- Extreme close-up of hands doing fine, intricate work.
+
+"ok" — everything else. Do NOT flag (common false alarms): "banana slices" / "a plate of slices" (noun result), "freshly harvested/cut" as adjective, "half-open door", "tears roll down her cheeks", "breaks into a smile", "picks up the crate", "pounding rain", environmental motion, the trailing negative list ("Avoid: ...") if present, mild stillness, object-only scenes.
+
+For every "severe", also write "fixedContent": a rewrite of the WHOLE content you received (the negative tail was already stripped from your input — do NOT add one back). Rules for the rewrite:
+- Keep the scene's story meaning, era, place and characters. Copy each character's parenthesized description block VERBATIM.
+- Keep the field labels present in the original (Expression: / Setting: / Lighting: / Camera:) and keep the sentence starting "Rendered in the style of" unchanged at the end.
+- Change ONLY what fixes the violation: violence → calm AFTERMATH that still contains people doing ordinary actions; paperwork/text → people doing the described activity in the described place; transformation moment → the moment BEFORE (tool raised, no contact) or AFTER (result fully done, source out of frame); partial state → fully intact or fully processed; crowd → 3-5 people in sharp focus, rest as soft-focus silhouettes; camera → ONE gentle slow move or static.
+Output strictly valid JSON for EVERY input sceneId.`;
+
 // Chỉ thị ràng buộc bơm vào payload từng cảnh của Bước 3.
 const planToDirective = (p: VisualPlan | undefined, hasRequiredChars: boolean): string => {
   if (!p) return '';
@@ -1353,6 +1397,9 @@ export const generatePromptsForSingleSegment = async (
     plannerChain = run.catch(() => {});
     try { visualPlans = await run; } catch { /* planner là tầng phụ trợ — bỏ qua */ }
   }
+
+  // 👉 B3.5 — Audit pass: không set thì theo gói API (paid bật, free tắt cho đỡ tốn lượt).
+  const auditEnabled = options?.auditPass ?? ((typeof localStorage !== 'undefined' ? (localStorage.getItem('app1_api_tier') || 'paid') : 'paid') !== 'free');
 
   const systemInstruction = `You are a Master Cinematography Prompt Engineer for Veo 3 video generation.
 For each input scene, output a JSON object with these fields. The user's code assembles them into the final video prompt. OUTPUT STRICTLY VALID JSON.
@@ -1672,6 +1719,50 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
           }, scene);
         }
         pendingBatch = [];
+      }
+
+      // 👉 B3.5 — AUDIT PASS: soi lại cả mẻ 1 lần (checklist veo-prompt-audit nhúng
+      // trong AUDIT_INSTRUCTION). Chỉ nhận bản viết lại cho lỗi "severe" và CHỈ khi
+      // bản đó vượt qua đủ lưới tất định — không đạt thì giữ bản gốc. Audit là tầng
+      // phụ trợ: lỗi API → bỏ qua trong im lặng, không chặn kết quả.
+      if (auditEnabled && validItems.length > 0) {
+        try {
+          onStatusUpdate?.(`Đang kiểm định chất lượng mẻ ${index + 1}...`);
+          const sceneById = new Map(batch.map(s => [s.id, s]));
+          const auditPayload = validItems.map(vi => {
+            const m = vi.generatedPrompt.match(/^\d+\.\s([\s\S]*)$/);
+            const body = m ? m[1] : vi.generatedPrompt;
+            return { sceneId: vi.sceneId, content: stripNegativeTails(body).trim() };
+          });
+          const audited = await callAISafe<any[]>(
+            `Audit these prompts:\n${JSON.stringify(auditPayload)}`,
+            AUDIT_INSTRUCTION, AUDIT_SCHEMA, 0.2, limitPromptConcurrency, providerId
+          );
+          for (const a of (Array.isArray(audited) ? audited : [])) {
+            if (a?.severity !== 'severe' || typeof a.fixedContent !== 'string' || !a.fixedContent.trim()) continue;
+            const idx = validItems.findIndex(vi => vi.sceneId === a.sceneId);
+            const scene = sceneById.get(a.sceneId);
+            if (idx === -1 || !scene) continue;
+            // Dựng lại đúng pipeline tất định như pushAccepted.
+            let content = fixDigitalClock(fixPeelNoun(a.fixedContent.trim().replace(/\s+/g, ' ')));
+            if (!content.toLowerCase().includes('rendered in the style of')) {
+              content = `${/[.!?]$/.test(content) ? content : content + '.'} Rendered in the style of ${finalStyleStr}.`;
+            }
+            const anchors: string[] = [];
+            const sa = buildStateAnchor(content); if (sa) anchors.push(sa);
+            const ca = buildClockAnchor(content); if (ca) anchors.push(ca);
+            // Đuôi negative chọn LẠI theo nội dung mới (bản sửa có thể thêm/bớt người).
+            let candidate = [content, ...anchors, pickNegativeTail({}, content)].join(' ');
+            if (customPromptSuffix.trim()) {
+              const suffix = customPromptSuffix.trim();
+              candidate = candidate.endsWith('.') ? candidate.slice(0, -1) + ', ' + suffix + '.' : candidate + ', ' + suffix;
+            }
+            candidate = scrubRealNames(candidate, characters);
+            const verdict = validateNameAndRichness(candidate, detectPresentChars(scene));
+            if (!verdict.ok) continue;                     // bản sửa không sạch hơn → giữ bản gốc
+            validItems[idx] = { ...validItems[idx], generatedPrompt: `${scene.id}. ${candidate}` };
+          }
+        } catch { /* audit phụ trợ — bỏ qua */ }
       }
 
       return validItems;
