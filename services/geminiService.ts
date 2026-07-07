@@ -535,6 +535,10 @@ S3. PERSON + OBJECT TOGETHER. When the subject is an object (a fruit, a tool, a 
 S4. SENSITIVE/VIOLENT EVENTS → AFTERMATH WITH PEOPLE, NEVER GORE. Never depict weapons being aimed or fired, fighting, corpses, blood, wounds, graves, skulls, or people in terror. Tell such moments through a calm aftermath that still contains people doing ordinary actions: soldiers slowly patrolling an empty square at dawn, a woman picking up a fallen hat, villagers walking silently past shuttered houses, mourners placing flowers and candles. The frame must never be empty scenery alone.
 S5. CROWD LIMIT. At most 3-5 clearly visible people in the foreground; any larger gathering appears only as soft-focus silhouettes or indistinct shapes in the background. Never describe "thousands of people", "a sea of faces", or a dense packed crowd in sharp focus.
 S6. NO READABLE TEXT. Never show text meant to be read: headlines, labels, dates, calendar pages, signs, screens, typed words. Show the passage of time through nature and light instead (leaves falling, a candle burning down, light shifting across a room, seasons changing outside a window).
+S7. EXPLICIT ETHNICITY & ERA FOR EVERY PERSON (target audience: American viewers). NEVER write a bare, ambiguous person ("a woman", "a farmer", "a man in a suit") — every person in every field MUST carry an explicit nationality/ethnicity descriptor plus era-appropriate clothing. Decide it in this priority order:
+   a) If the narration states or implies the person's nationality/ethnicity (Colombian workers, Guatemalan president, Arab traders...) → use exactly that.
+   b) Else if the scene's location/era clearly belongs to a specific country or culture (a highland village in New Guinea, a Caribbean port, a Colombian plantation...) → use people native to that place and time.
+   c) Otherwise → DEFAULT to a white American person, styled correctly for the era: modern-day scenes get contemporary American looks (e.g. "a white American woman in her 30s, casual modern clothes"); historical American scenes get period-accurate dress (e.g. "a white American man in 1950s attire").
 === END VISUAL STORYTELLING RULE ===`;
 
 // 👉 TỪ KHÓA CẤM trong nội dung cảnh/prompt (giấy tờ, chữ đọc được, bạo lực, đám đông
@@ -808,7 +812,7 @@ CRITICAL RULES:
 2. Put a safe, generic role alias in the "name" field (e.g., "The Protagonist", "The Horse", "The Villain").
 3. ZERO-HALLUCINATION (CRITICAL): Extract ONLY physical traits explicitly mentioned or strongly implied in the script. DO NOT invent details like hair color or age if they are missing from the text.
 4. "visualDescription" MUST follow this exact formula if details exist: "[Age/Gender/Species], [Body Type/Build], [Hair/Coat/Skin], [Key Features]". Keep it as a concise comma-separated list. If completely undefined, leave it EMPTY "".
-5. For "ethnicity" and "clothing", extract strictly from the script. If NOT explicitly mentioned, leave the string EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
+5. For "ethnicity": extract from the script if stated; else INFER from the character's story context (nationality/location/era — e.g. a Guatemalan president → "Guatemalan"); if the story gives NO such context at all, default to "white American" (the videos target American viewers). For "clothing": extract strictly from the script; if not mentioned, leave EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
       { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
       0.4, limitSceneConcurrency);
@@ -911,7 +915,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people.
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7).
 
 CONTEXT: ${globalContext}
 
@@ -1003,7 +1007,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people.
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7).
 
 CONTEXT: ${globalContext}
 
@@ -1091,7 +1095,7 @@ ${ANTI_ARTIFACT_RULE}
 Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, keep the camera locked, and lean on environmental motion. Being artifact-free outranks looking cinematic.
 
 ${STORYTELLING_RULE}
-Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': the viewer must see PEOPLE living the story — never paperwork/maps/text props, never an empty frame, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus.
+Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': the viewer must see PEOPLE living the story — never paperwork/maps/text props, never an empty frame, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7).
 
 CONTEXT: ${globalContext}
 
