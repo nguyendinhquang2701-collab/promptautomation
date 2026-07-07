@@ -499,7 +499,7 @@ const PROMPT_SCHEMA = {
     properties: {
       sceneId: { type: Type.INTEGER, description: "Matches the input scene id." },
       camera_angle: { type: Type.STRING, description: "SHORT, 1-3 words. Neutral only: eye-level / slight low-angle / slight high-angle / straight-on." },
-      shot_size: { type: Type.STRING, description: "SHORT, 1-3 words. Medium or Wide preferred: wide shot / medium-wide shot / medium shot / establishing shot. Never a tight close-up on hands or faces." },
+      shot_size: { type: Type.STRING, description: "SHORT, 1-3 words. Vary it across scenes: establishing / wide / medium-wide / medium / close-up / extreme close-up / cutaway. Close-ups and extreme close-ups are fine on OBJECTS or still details; keep PEOPLE at medium/wide and never tight on moving hands or faces." },
       camera_movement: { type: Type.STRING, description: "SHORT, 1-3 words. Exactly ONE gentle move OR static: static / slow push-in / slow pull-back / slow pan / gentle drift / slow tilt." },
       setting: { type: Type.STRING, description: "SHORT, the place only, ≤12 words. e.g. '1950s radio studio, warm lamplight'." },
       time: { type: Type.STRING, description: "SHORT, era + time of day, ≤6 words. e.g. '1950s, evening' or 'modern day, morning'." },
@@ -997,15 +997,23 @@ For each input scene assign ONE composition plan: form / place / era / shot / pe
 
 RULES:
 1. ILLUSTRATE THE TEXT: the plan must show the story meaning of that scene's description — never invent an unrelated subject. Never plan maps, documents, newspapers, readable text, violence, or dense crowds.
-2. ROTATE RELENTLESSLY (the whole point). Never let two nearby scenes share the same form+place. Rotate along three axes:
-   - FORMS of the same subject (single item → bunch/cluster → tree/source → grove/factory rows → crates at the dock → market pile → shop shelf...)
-   - PLACES (kitchen, plantation, market, port, ship deck, warehouse, roadside stall, farmhouse...)
-   - ERAS & LIGHT within the script's timeframe (dawn mist, colonial noon, 1950s tungsten evening, modern morning...).
+2. ROTATE RELENTLESSLY (the whole point). Never let two nearby scenes share the same look. For each new plan, compare it against the recent scenes and the ALREADY-USED list, then change SEVERAL of these axes so it feels fresh — run this DIVERSITY CHECKLIST:
+   • Same subject/character → different ACTION? (not the same pose or gesture again)
+   • Same character → different NUMBER? (alone vs. part of a small group / crowd)
+   • Same character → different INTERACTION? (holding something different, touching something, talking to someone vs. no one)
+   • Same character → different PLACE? (indoors vs. outdoors, city vs. countryside)
+   • Same setting → different TIME OF DAY? (dawn, harsh midday, golden sunset, night)
+   • Same setting → different SEASON / WEATHER? (clear sun, rain, snow, fog, mist)
+   • Same setting → different DEPTH LAYERS? (new foreground or background detail)
+   • Same topic → different ERA? (past vs. present — great for food-history, stay within the script's overall timeframe though)
+   • Same scene → different SHOT SIZE? (wide, medium, close, extreme close-up, cutaway/insert)
+   • Also rotate the FORM of the subject (single item → bunch/cluster → tree/source → grove/factory rows → crates at the dock → market pile → shop shelf...).
+   The 'form' and 'place' you output are the primary anti-repeat keys, but let this whole checklist drive your choices of era, shot and person_action too.
 3. ALREADY-USED COMPOSITIONS (from earlier parts of this video — do NOT reuse any of these form+place pairings):
 ${recentLabels.length ? recentLabels.map(l => `   - ${l}`).join('\n') : '   (none yet)'}
 4. PEOPLE ARE OPTIONAL: use 'none' freely for object/place scenes — but a scene listing REQUIRED_CHARACTERS must feature exactly those characters (never 'none'). When a person appears, give them ONE continuous whole-body action (carrying, walking, loading, rowing...), never posing.
 5. ERA CONSISTENCY: stay inside the era implied by the scene text / context below. Vary light and sub-period, not the century.
-6. SHOT: pick from wide static / medium static / wide slow push-in / medium slow pan / establishing wide — Medium/Wide only, one gentle move max.
+6. SHOT: vary the shot size across scenes (establishing wide, wide, medium-wide, medium, and — for OBJECTS or still details only — close or extreme close-up). Keep PEOPLE at medium/wide (never a tight close-up on moving hands or faces). One gentle camera move max (static / slow push-in / slow pull-back / slow pan / gentle drift).
 
 CONTEXT: ${globalContext || '(none)'}
 
@@ -1466,7 +1474,17 @@ NO ERRORS (this is the #1 priority — a clean simple shot always beats a fancy 
 
 REALISM: aim for footage that looks genuinely filmed — natural imperfect light, true-to-life color. NEVER use film-medium words ("film grain", "shot on film", "35mm film", "archival/vintage film") — Veo draws literal film borders, sprocket holes, frame numbers and scratches onto the image. Never "hyper-realistic / 8K / flawless" either (they cause plastic CGI skin).
 
-VARIETY ACROSS SCENES (stock thinking — do not bore the viewer): when the same topic recurs, do NOT repeat the same composition. Rotate the place, the time/era, and the angle. E.g. for "a leader gives a speech": one scene is the speaker, the next is city crowds listening, the next is a rural family gathered by a radio, the next is a lone worker pausing to listen — each its own single moment. Use the VISUAL_PLAN below when provided.
+VARIETY ACROSS SCENES (stock thinking — do not bore the viewer): when the same subject or character recurs, do NOT repeat the same composition. E.g. for "a leader gives a speech": one scene is the speaker, the next is city crowds listening, the next is a rural family gathered by a radio, the next is a lone worker pausing to listen — each its own single moment. Before writing each scene, run this DIVERSITY CHECKLIST versus the nearby scenes and change several axes:
+   • Same character → different ACTION? (not the same pose/gesture repeated)
+   • Same character → different NUMBER? (alone vs. in a small group / crowd)
+   • Same character → different INTERACTION? (holding something else, touching something, talking to someone vs. no one)
+   • Same character → different PLACE? (indoors vs. outdoors, city vs. countryside)
+   • Same setting → different TIME OF DAY? (dawn, harsh midday, golden sunset, night)
+   • Same setting → different SEASON / WEATHER? (clear sun, rain, snow, fog, mist)
+   • Same setting → different DEPTH LAYERS? (new foreground or background detail)
+   • Same topic → different ERA? (past vs. present — great for food-history; stay within the story's overall timeframe)
+   • Same scene → different SHOT SIZE? (wide, medium, close, extreme close-up, cutaway) — keep PEOPLE at medium/wide, use close-ups only on objects/details.
+When a VISUAL_PLAN is provided below, it already encodes these choices — follow it.
 
 VISUAL PLAN: if a scene input has "VISUAL_PLAN", the art director assigned it to keep the whole video varied — FOLLOW it. Build the scene on that FORM / PLACE / ERA / SHOT. If PERSON is "none", make it an object/place scene with character="". If PERSON names someone, that person + action is the human element. The scene's own text still gives the story meaning. If the plan ever conflicts with a safety rule above, the safety rule wins.
 
