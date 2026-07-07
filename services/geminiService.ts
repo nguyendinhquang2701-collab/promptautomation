@@ -82,6 +82,32 @@ const stripIdentityTitles = (desc: string): string => {
   return desc.split(',').map(s => s.trim()).filter(seg => seg && !TITLE_WORD_RE.test(seg)).join(', ');
 };
 
+// 👉 BẢO ĐẢM 100% CÓ NGOẠI HÌNH (tất định): nếu AI vẫn để trống (hoặc bị strip sạch),
+// code tự dựng mô tả CHUNG theo framework Mặt/Vóc dáng/Trang phục để đồng bộ nhân vật.
+const APPEARANCE_JUNK = new Set(['', 'n/a', 'none', 'unspecified', 'not specified', 'unknown', 'khong', 'null', 'undefined', '""']);
+const ANIMAL_RE = /\b(horses?|dogs?|cats?|cows?|oxen|ox|buffalo(?:es)?|goats?|sheep|pigs?|hogs?|chickens?|ducks?|geese|donkeys?|mules?|elephants?|lions?|tigers?|bears?|wolves?|foxes?|deer|rabbits?|monkeys?|fish|snakes?|eagles?|owls?|camels?|mice|mouse|rats?|birds?)\b|ngựa|chó|mèo|trâu|dê|cừu|lợn|heo|gà|vịt|voi|hổ|sư tử|gấu|sói|cáo|hươu|thỏ|khỉ|cá|rắn/i;
+const synthesizeAppearance = (c: CharacterIdentity): string => {
+  const blob = `${c.name || ''} ${c.promptName || ''} ${c.visualDescription || ''} ${c.ethnicity || ''} ${c.clothing || ''}`;
+  const animalHit = blob.match(ANIMAL_RE);
+  if (animalHit && !/\b(man|woman|men|women|person|people|boy|girl|human)\b/i.test(blob)) {
+    return `healthy adult ${animalHit[0].toLowerCase()}, smooth natural coat, calm eyes, sturdy build`;
+  }
+  const info = blob.toLowerCase();
+  const female = /\b(woman|female|girl|lady|queen|princess|empress|matriarch|nun|mother|wife|daughter|actress|she|her|hostess)\b|phụ nữ|thiếu nữ|cô gái|bà |nữ /.test(info);
+  const old = /\b(elderly|old|aged|senior|veteran|grand)\b|già|cao tuổi|lớn tuổi|trung niên|tóc bạc|râu bạc/.test(info);
+  const young = /\b(young|teen|youth|boy|girl|child|kid|student)\b|trẻ|thanh niên|thiếu niên/.test(info);
+  const ethn = (c.ethnicity && !APPEARANCE_JUNK.has(foldText(c.ethnicity.trim()))) ? c.ethnicity.trim() : 'white American';
+  const clo = (c.clothing && !APPEARANCE_JUNK.has(foldText(c.clothing.trim()))) ? c.clothing.trim() : 'plain neutral everyday clothing';
+  const age = old ? 'middle-aged' : young ? 'young' : 'adult';
+  const gender = female ? 'woman' : 'man';
+  const hair = female ? 'shoulder-length dark hair' : 'short dark hair';
+  return `${age} ${ethn} ${gender}, oval face, ${hair}, medium build, ${clo}`;
+};
+const ensureAppearance = (c: CharacterIdentity): CharacterIdentity => {
+  const cleaned = stripIdentityTitles((c.visualDescription || '').trim()).trim();
+  return { ...c, visualDescription: APPEARANCE_JUNK.has(foldText(cleaned)) ? synthesizeAppearance(c) : cleaned };
+};
+
 const getColorDescription = (style: ColorStyle): string => {
   switch (style) {
     case 'cinematic': return "HDR, deep shadows, balanced highlights, pro color grading, realistic textures";
@@ -1159,10 +1185,10 @@ CRITICAL RULES:
    1) FACE: age range + gender + facial features + hair + skin (e.g. "middle-aged man, square jaw, short greying hair, tanned skin").
    2) BUILD: height / body build (e.g. "medium height, sturdy build").
    3) CLOTHING: garment type + color (e.g. "charcoal double-breasted suit, white shirt").
-   ABSOLUTELY FORBIDDEN here (this field must NOT identify a real person): any personal name; any role, title, office, rank, or occupation used as identity (president, king, general, minister, senator, CEO, "democratically elected", "leader of ...", "president of Guatemala"); any country or organization named as a title; any famous event, position, or achievement. PHYSICAL LOOK ONLY. Leave EMPTY "" only for a non-visual entity (e.g. a pure voice-over narrator that never appears on screen).
+   ABSOLUTELY FORBIDDEN here (this field must NOT identify a real person): any personal name; any role, title, office, rank, or occupation used as identity (president, king, general, minister, senator, CEO, "democratically elected", "leader of ...", "president of Guatemala"); any country or organization named as a title; any famous event, position, or achievement. PHYSICAL LOOK ONLY. NEVER leave this empty — EVERY character, including a narrator/host, gets an invented ordinary appearance (a narrator may appear on screen, and a consistent look is required either way).
 5. For "ethnicity": extract from the script if stated; else INFER from the character's story context (nationality/location/era — e.g. a Guatemalan president → "Guatemalan"); if the story gives NO such context at all, default to "white American" (the videos target American viewers). For "clothing": extract strictly from the script; if not mentioned, leave EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
-      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING, description: "Physical appearance ONLY, comma-separated, ALWAYS FILLED for on-screen characters (invent ordinary era/ethnicity-appropriate details when the script is silent — needed for cross-scene consistency): FACE (age, gender, facial features, hair, skin), then BUILD (height/build), then CLOTHING (type + color). NEVER a name, title, office, rank, occupation, country-as-title, or achievement (no 'president', 'general', 'president of Guatemala', 'democratically elected'), and never a real figure's signature features. Empty \"\" only for a non-visual voice-over entity." } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
+      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING, description: "Physical appearance ONLY, comma-separated, ALWAYS FILLED for EVERY character incl. a narrator/host (invent ordinary era/ethnicity-appropriate details when the script is silent — needed for cross-scene consistency): FACE (age, gender, facial features, hair, skin), then BUILD (height/build), then CLOTHING (type + color). NEVER a name, title, office, rank, occupation, country-as-title, or achievement (no 'president', 'general', 'president of Guatemala', 'democratically elected'), and never a real figure's signature features. Never empty." } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
       0.4, limitSceneConcurrency);
     updateUsageStats({ scripts: 1 });
 
@@ -1218,7 +1244,7 @@ Output strictly valid JSON.`,
       const codename = pickCodename(c);
       usedCodenames.add(foldText(codename));
       return { ...c, originalName: orig || pn, promptName: codename };
-    });
+    }).map(ensureAppearance);   // 👉 100% có ngoại hình — trống thì code tự dựng mô tả chung
     // 👉 Lọc tên thật khỏi globalContext — context này được bơm vào MỌI system prompt
     // phía sau, để nguyên tên thật là mồi cho AI lặp lại nó ở từng cảnh.
     const context = scrubRealNames(result.context || "", characters);
