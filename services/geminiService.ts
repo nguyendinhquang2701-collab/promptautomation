@@ -542,6 +542,8 @@ S7. EXPLICIT ETHNICITY & ERA FOR EVERY PERSON (target audience: American viewers
 S8. NO TRANSFORMATION MOMENTS. Video models CANNOT make an object change form mid-shot — they duplicate the object instead (the bunch stays on the tree AND appears in the hand). This applies to EVERY object and material: fruit, crops, wood, stone, cloth, rope, food, tools. NEVER depict the instant of cutting, chopping, slicing, peeling, splitting, breaking, cracking, grinding, crushing, pounding, reaping, felling, carving, sawing, tearing, squeezing. Choose the moment BEFORE or AFTER:
    - BEFORE (anticipation, no contact yet): the worker raises a machete toward the banana stem / the woodcutter rests his axe on his shoulder beside the tall tree / the cook places a whole fish on the board, knife resting beside it.
    - AFTER (result already done): the worker carries a freshly harvested banana bunch away — tree OUT of frame / split firewood lies stacked as the man wipes his brow / a farmer carries bundles of harvested rice stalks across the field / a bowl of ground spices sits beside the stone mortar.
+   - NO PARTIAL / AMBIGUOUS STATES: an object is either fully INTACT or fully PROCESSED — never half-peeled, half-cut, half-eaten, partially open. A hybrid state forces the model to blend two materials (peel + flesh) and it renders nonsense. A person holds a WHOLE banana; slices sit on a plate FULLY sliced. Prefer intact objects whenever possible.
+   - MATERIAL CONTRAST: keep the featured object visually DISTINCT from the clothing/background touching it (different color and texture) — similar colors bleed into each other (a pale banana against a cream knit sweater inherits the knit texture). State the contrast explicitly when needed (e.g. "a yellow banana held against a dark blue apron").
    - ONE-INSTANCE RULE: the featured object exists in exactly ONE place in the frame. If it is in someone's hands, its source (tree, pile, plant) must be OUT of frame and NOT mentioned — describing both invites the model to draw the object twice.
    - Allowed object interactions are RIGID-BODY ONLY: carry, lift, hold, place down, stack, load, turn over, push a cart — the object moves but never changes shape.
 === END VISUAL STORYTELLING RULE ===`;
@@ -588,7 +590,7 @@ const BANNED_VISUALS: { re: RegExp; label: string }[] = [
   { re: /\b(?:rifles?|guns?|weapons?)\s+at the ready\b/i, label: 'weapon at the ready' },
   // Hành động BIẾN ĐỔI vật thể (model không cắt/tách/bóc/nghiền/gặt... được — sẽ nhân
   // bản vật thể). Chỉ bắt dạng ĐỘNG TỪ chủ động (verb + the/a/an/off/open/down...) —
-  // danh từ "banana slices", quá khứ phân từ "freshly harvested", "half-peeled" vẫn hợp lệ.
+  // danh từ "banana slices", quá khứ phân từ "freshly harvested" vẫn hợp lệ.
   { re: /\b(?:cuts?|cutting|chops?|chopping|slices?|slicing|severs?|severing|peels?|peeling|splits?|splitting|tears?|tearing|snaps?|snapping|carves?|carving|saws?|sawing|rips?|ripping|shreds?|shredding|grates?|grating|grinds?|grinding|crushes|crushing|smashes|smashing|shatters?|shattering|squeezes|squeezing|kneads?|kneading|threshes|threshing|reaps?|reaping|mows?|mowing|fells?|felling|husks?|husking|shucks?|shucking)\s+(?:the|a|an|off|open|through|into|apart|down)\b/i, label: 'object transformation' },
   { re: /\b(?:peeled|sliced|chopped|severed|snapped|crushed|smashed|shattered|ground)\s+(?:the|a|an)\b/i, label: 'object transformation' },
   { re: /\bbreak(?:s|ing)?\s+(?:open|apart|off|in half|in two)\b/i, label: 'breaking object' },
@@ -597,6 +599,10 @@ const BANNED_VISUALS: { re: RegExp; label: string }[] = [
   { re: /\bpress(?:es|ing)?\s+(?:the\s+)?(?:juice|oil|grapes?|sugarcane|cane|olives?)\b/i, label: 'pressing juice' },
   { re: /\bpluck(?:s|ing|ed)?\b/i, label: 'plucking' },
   { re: /\bpick(?:s|ing)?\s+(?!up\b)(?:a|an|the)\b/i, label: 'picking off (detach)' },
+  // Trạng thái DỞ DANG (bóc dở, cắt dở, ăn dở) — model trộn hai vật liệu thành vô nghĩa
+  // (vỏ chuối nhiễm vân áo len). Vật thể phải NGUYÊN VẸN hoặc XỬ LÝ XONG hoàn toàn.
+  { re: /\b(?:half|partially|partly)[- ](?:peeled|cut|sliced|eaten|split|unwrapped)\b/i, label: 'partial state' },
+  { re: /\bpeel\s+(?:already\s+)?(?:half|partly|partially)\s+open\b/i, label: 'partial state' },
   // Đám đông dày đặc
   { re: /\b(?:thousands|hundreds) of (?:people|workers|men|women|strikers|protesters)\b/i, label: 'mass crowd' },
   { re: /\bsea of faces\b/i, label: 'sea of faces' },
