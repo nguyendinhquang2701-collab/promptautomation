@@ -478,7 +478,7 @@ const PROMPT_SCHEMA = {
       expression: { type: Type.STRING, description: "Subtle facial expression / emotional beat per character. Empty string if no person on screen." },
       setting: { type: Type.STRING, description: "Environment, period, weather, time of day, props in frame, plus any gentle environmental motion (smoke, steam, candle flicker, wind)." },
       lighting: { type: Type.STRING, description: "Light direction, color temperature, contrast, key/fill/rim, named scheme. Prefer soft over hard light." },
-      camera_motion: { type: Type.STRING, description: "LOCKED camera: 'static lock-off' by default, or at most ONE single very slow push-in / pull-back. Never orbit, crane, tracking, handheld, whip pan, zoom, or drone." },
+      camera_motion: { type: Type.STRING, description: "Exactly ONE gentle, slow, smooth camera move per shot: slow push-in, slow pull-back, slow pan left/right, gentle lateral drift, or slow tilt. Static lock-off also allowed. Never combine moves; never orbit, crane, fast tracking, handheld shake, whip pan, zoom, or drone." },
       style_tail: { type: Type.STRING, description: "Style summary + quality anchors. MUST end with the exact phrase: Rendered in the style of <styleSummary>." },
       _validation_subjects: { type: Type.STRING, description: "Comma-separated list of every CANONICAL_NAME that appears in this scene. Used for internal validation only." }
     },
@@ -494,7 +494,7 @@ SHOT_SIZES (prefer the safe ones — Medium/Wide): Wide Shot (WS), Medium Long S
 ANGLES (keep neutral): eye-level, slight low-angle, slight high-angle, straight-on / frontal, three-quarter front. AVOID Dutch tilt, worm's-eye, extreme overhead.
 LENSES: 24mm wide, 35mm normal, 50mm standard. (Long tele / macro / fisheye NOT used — they exaggerate distortion.)
 DOF: moderate depth of field, deep focus. (No rack focus, no split focus.)
-CAMERA_MOTION (LOCKED — choose ONE): static lock-off (DEFAULT, preferred) OR one single very slow push-in OR one single very slow pull-back. Nothing else — no dolly-sideways, tracking, crane, jib, handheld, gimbal, orbit, whip pan, zoom, drone, POV.
+CAMERA_MOTION (choose exactly ONE gentle move per shot): slow push-in, slow pull-back, slow pan left, slow pan right, gentle lateral drift left/right, slow tilt up/down, static lock-off. A single slow smooth move (DEFAULT, preferred — keeps the frame alive). NEVER combine moves; NEVER fast tracking, crane, jib, handheld shake, gimbal runs, orbit, whip pan, zoom, drone, POV walking.
 ENVIRONMENTAL_MOTION (use this INSTEAD of body motion to keep the shot alive): drifting smoke, rising steam, flickering candle/firelight, wind stirring fabric or grass, falling dust motes, gentle ripples on water, slow-drifting clouds, embers floating.
 LIGHTING_SCHEMES: soft diffused daylight, golden hour 5500K, overcast soft light, candlelight, motivated practical, Rembrandt, rim/back light, side light, top light. Prefer SOFT over hard light (hard light exaggerates artifacts).
 COMPOSITION: rule of thirds, centered framing, symmetrical, negative space, leading lines, foreground/midground/background layering, depth cues.
@@ -519,7 +519,7 @@ AVOID (these are the top causes of AI artifacts):
 - Fast movement, running, fighting, dancing, sudden gestures (cause jelly/morphing).
 - Dense crowds in sharp focus (faces and limbs merge): at most 3-5 clearly visible people in the foreground; any larger gathering only as soft-focus silhouettes in the background.
 - Elaborate armor/costume with heavy fine detail in close framing.
-- Any camera move beyond a single very slow push-in / pull-back.
+- Any camera work beyond ONE single gentle, slow, smooth move (push-in, pull-back, slow pan, gentle drift, slow tilt) — no combined moves, no fast motion.
 === END ANTI-ARTIFACT RULE ===`;
 
 // 👉 LUẬT KỂ CHUYỆN BẰNG HÌNH: minh họa ĐÚNG nội dung lời bình bằng NGƯỜI + BỐI CẢNH
@@ -626,7 +626,7 @@ HARD BANS (these break the video):
 - NO chaining of separate actions. The subject performs ONE clear action that can plausibly happen in 8 continuous seconds.
 - NO scene cuts of any kind.
 
-The camera stays essentially LOCKED. It is either fully static (locked-off) or performs at most ONE single very slow push-in or pull-back — never orbit, crane, whip pan, handheld, or any fast/complex move. It stays on the SAME continuous moment in the SAME place. Multiple characters present in the SAME place at the SAME time is allowed, but they hold simple stable poses — that is still one moment.
+The camera performs at most ONE gentle, slow, smooth move (slow push-in, pull-back, slow pan, gentle drift, or slow tilt) — or stays static. Never combine moves; never orbit, crane, whip pan, handheld shake, or any fast/complex move. It stays on the SAME continuous moment in the SAME place. Multiple characters present in the SAME place at the SAME time is allowed, but they hold simple stable poses — that is still one moment.
 === END SINGLE-MOMENT RULE ===`;
 
 // 👉 QUY TẮC AN TOÀN: TUYỆT ĐỐI không để tên người nổi tiếng / người thật ngoài đời
@@ -1108,7 +1108,7 @@ ${SINGLE_MOMENT_RULE}
 Apply this to the 'narrative', 'setting' and 'camera_motion' fields: depict ONLY the single selected moment. If the input scene text implies several locations or actions, pick the one most important moment and write the prompt for that alone — silently drop the rest.
 
 ${ANTI_ARTIFACT_RULE}
-Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, keep the camera locked, and lean on environmental motion. Being artifact-free outranks looking cinematic.
+Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, give the camera exactly ONE gentle slow move (or static), and lean on environmental motion. Being artifact-free outranks looking cinematic.
 
 ${STORYTELLING_RULE}
 Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': the viewer must see PEOPLE living the story — never paperwork/maps/text props, never an empty frame, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7). NEVER depict the instant an object changes form — choose BEFORE or AFTER, object in ONE place only (per S8).
@@ -1172,7 +1172,7 @@ ABSOLUTE MANDATORY RULES:
 3. STYLE TAIL must end exactly with: "Rendered in the style of ${finalStyleStr}."
 4. 'lighting' must integrate the COLOR GRADING listed above.
 5. No word "cut" anywhere. No location change, no time jump, no second action — ONE continuous moment only (see SINGLE-MOMENT RULE).
-6. ARTIFACT-FREE OVER CINEMATIC: obey the ANTI-ARTIFACT RULE first. Pull vocabulary from the STOCK-SAFE GLOSSARY; keep framing Medium/Wide, camera locked, actions simple. Never trade safety for flair.
+6. ARTIFACT-FREE OVER CINEMATIC: obey the ANTI-ARTIFACT RULE first. Pull vocabulary from the STOCK-SAFE GLOSSARY; keep framing Medium/Wide, one gentle slow camera move, actions simple. Never trade safety for flair.
 ${options?.audioMode !== 'keep' ? '7. AMBIENT-ONLY AUDIO: describe ONLY visuals. No dialogue, quotes, on-screen text, voiceover. If sound is implied, treat it as quiet ambient environmental sound only — no dialogue, no music.' : ''}
 DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays lean — one calm action per subject, no padding. Other fields: 1-3 tight sentences each.`;
 
