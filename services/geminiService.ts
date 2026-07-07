@@ -14,6 +14,8 @@ export interface ProviderConfig {
 export interface PromptOptions {
   splitLogic?: string;
   audioMode?: 'remove' | 'keep';
+  // 👉 Bước 2.5 — Visual Planner (chống lặp bố cục xuyên mẻ/phân đoạn). Mặc định BẬT.
+  visualPlanner?: boolean;
 }
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
@@ -904,6 +906,152 @@ const scrubRealNames = (text: string, characters: CharacterIdentity[]): string =
   return out;
 };
 
+// ============================================================================
+// 👉 BƯỚC 2.5 — VISUAL PLANNER (chống lặp bố cục XUYÊN mẻ và XUYÊN phân đoạn).
+// Bệnh đã gặp thật: 5 cảnh liên tiếp đều "chuối trên bàn bếp" vì mỗi mẻ Bước 3
+// (5 cảnh) không nhìn thấy mẻ khác. Planner nhìn 40 cảnh/lần + SỔ ĐA DẠNG dùng
+// chung toàn app (các phân đoạn chạy song song vẫn nối tiếp qua plannerChain),
+// giao cho mỗi cảnh một "phương án bố cục" (form/place/era/shot/person) mang tính
+// RÀNG BUỘC với Bước 3. Planner hỏng → Bước 3 chạy như cũ, không thêm điểm chết.
+// ============================================================================
+interface VisualPlan { sceneId: number; form: string; place: string; era: string; shot: string; person_action: string; }
+const PLAN_SCHEMA = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      sceneId: { type: Type.INTEGER },
+      form: { type: Type.STRING, description: "The FORM of the scene's main subject, 2-6 words (e.g. 'hanging banana bunch', 'wooden crates of bananas', 'single ripe banana', 'steam locomotive', 'harbor cranes')." },
+      place: { type: Type.STRING, description: "Concrete location, 2-6 words (e.g. 'jungle plantation row', 'dockside market', '1950s American kitchen')." },
+      era: { type: Type.STRING, description: "Era + light mood, 2-5 words, consistent with the script timeframe (e.g. 'colonial noon', '1950s tungsten evening', 'modern morning sun')." },
+      shot: { type: Type.STRING, description: "Shot size + camera, 2-5 words from the stock-safe set (e.g. 'wide static', 'medium slow push-in')." },
+      person_action: { type: Type.STRING, description: "Either 'none' (object/place-only scene) or ONE person + ONE continuous whole-body action, ≤10 words (e.g. 'a Guatemalan dockworker carries a crate'). Scenes with REQUIRED_CHARACTERS must feature those characters, never 'none'." }
+    },
+    required: ["sceneId", "form", "place", "era", "shot", "person_action"]
+  }
+};
+// Khóa so trùng: gộp từ nội dung của form+place (bỏ từ dừng, bỏ 's' số nhiều, xếp
+// thứ tự) để "banana on kitchen counter" và "kitchen counter with a banana" ra cùng khóa.
+const PLAN_STOPWORDS = new Set(['the', 'and', 'with', 'from', 'into', 'over', 'under', 'near', 'beside', 'across', 'around', 'onto', 'upon', 'for', 'row', 'rows']);
+const comboKey = (form: string, place: string): string => {
+  // Stem tối giản: bỏ đuôi es/s rồi bỏ e cuối — để "bunches/bunch", "crates/crate",
+  // "houses/house" đều quy về cùng gốc (chỉ cần NHẤT QUÁN làm khóa, không cần đúng ngữ pháp).
+  const stem = (w: string) => (/es$/.test(w) ? w.slice(0, -2) : w.replace(/s$/, '')).replace(/e$/, '');
+  const norm = (s: string) => foldText(s || '').replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    .filter(w => w.length > 2 && !PLAN_STOPWORDS.has(w)).map(stem).sort().join(' ');
+  return `${norm(form)}::${norm(place)}`;
+};
+// SỔ ĐA DẠNG: FIFO có trần — combo cũ tự rơi khỏi sổ, không cần reset thủ công.
+const LEDGER_MAX = 60;
+const ledgerKeys: string[] = [];
+const ledgerLabels: string[] = [];
+const ledgerHas = (k: string) => ledgerKeys.includes(k);
+const ledgerPush = (k: string, label: string) => {
+  ledgerKeys.push(k); ledgerLabels.push(label);
+  while (ledgerKeys.length > LEDGER_MAX) { ledgerKeys.shift(); ledgerLabels.shift(); }
+};
+// Các phân đoạn chạy SONG SONG (gói paid) vẫn phải đọc/ghi sổ nối tiếp nhau.
+let plannerChain: Promise<unknown> = Promise.resolve();
+
+const PLANNER_BATCH = 40;
+const buildPlannerInstruction = (globalContext: string, recentLabels: string[]): string => `You are the ART DIRECTOR planning compositions for a sequence of 8-second historical B-roll shots, BEFORE the prompt writers start. Your ONLY job: make every scene visually DIFFERENT while still illustrating its text.
+
+For each input scene assign ONE composition plan: form / place / era / shot / person_action.
+
+RULES:
+1. ILLUSTRATE THE TEXT: the plan must show the story meaning of that scene's description — never invent an unrelated subject. Never plan maps, documents, newspapers, readable text, violence, or dense crowds.
+2. ROTATE RELENTLESSLY (the whole point). Never let two nearby scenes share the same form+place. Rotate along three axes:
+   - FORMS of the same subject (single item → bunch/cluster → tree/source → grove/factory rows → crates at the dock → market pile → shop shelf...)
+   - PLACES (kitchen, plantation, market, port, ship deck, warehouse, roadside stall, farmhouse...)
+   - ERAS & LIGHT within the script's timeframe (dawn mist, colonial noon, 1950s tungsten evening, modern morning...).
+3. ALREADY-USED COMPOSITIONS (from earlier parts of this video — do NOT reuse any of these form+place pairings):
+${recentLabels.length ? recentLabels.map(l => `   - ${l}`).join('\n') : '   (none yet)'}
+4. PEOPLE ARE OPTIONAL: use 'none' freely for object/place scenes — but a scene listing REQUIRED_CHARACTERS must feature exactly those characters (never 'none'). When a person appears, give them ONE continuous whole-body action (carrying, walking, loading, rowing...), never posing.
+5. ERA CONSISTENCY: stay inside the era implied by the scene text / context below. Vary light and sub-period, not the century.
+6. SHOT: pick from wide static / medium static / wide slow push-in / medium slow pan / establishing wide — Medium/Wide only, one gentle move max.
+
+CONTEXT: ${globalContext || '(none)'}
+
+Output strictly valid JSON for EVERY input scene id.`;
+
+const planVisualsForScenes = async (
+  scenes: Scene[],
+  globalContext: string,
+  requiredCharsByScene: Map<number, string[]>,
+  onStatusUpdate?: (msg: string) => void
+): Promise<Map<number, VisualPlan>> => {
+  const plans = new Map<number, VisualPlan>();
+  for (let i = 0; i < scenes.length; i += PLANNER_BATCH) {
+    const chunk = scenes.slice(i, i + PLANNER_BATCH);
+    const payload = chunk.map(s => ({
+      id: s.id,
+      description: (s.visualDescription || '').slice(0, 300),
+      setting: (s.settingTime || '').slice(0, 120),
+      REQUIRED_CHARACTERS: requiredCharsByScene.get(s.id) || []
+    }));
+    let planned: any[] = [];
+    try {
+      planned = await callAISafe<any[]>(
+        `Plan compositions for these scenes:\n${JSON.stringify(payload)}`,
+        buildPlannerInstruction(globalContext, ledgerLabels.slice(-25)),
+        PLAN_SCHEMA, 0.6, limitPromptConcurrency
+      );
+    } catch { continue; }                                  // planner là tầng phụ trợ — lỗi thì bỏ qua mẻ này
+    if (!Array.isArray(planned)) continue;
+
+    // Chống trùng TẤT ĐỊNH: trùng trong mẻ hoặc trùng sổ → gom lại xin phương án khác (1 vòng).
+    const seen = new Set(ledgerKeys);
+    const accepted: VisualPlan[] = [];
+    let dupes: VisualPlan[] = [];
+    for (const p of planned) {
+      if (typeof p?.sceneId !== 'number' || !p.form || !p.place) continue;
+      const k = comboKey(p.form, p.place);
+      if (seen.has(k)) { dupes.push(p); } else { seen.add(k); accepted.push(p); }
+    }
+    if (dupes.length > 0) {
+      onStatusUpdate?.(`Đổi bố cục ${dupes.length} cảnh bị trùng...`);
+      try {
+        const usedNow = [...ledgerLabels.slice(-25), ...accepted.map(p => `${p.form} / ${p.place}`)];
+        const retryPayload = dupes.map(p => {
+          const s = chunk.find(x => x.id === p.sceneId);
+          return { id: p.sceneId, description: (s?.visualDescription || '').slice(0, 300), setting: (s?.settingTime || '').slice(0, 120), REQUIRED_CHARACTERS: requiredCharsByScene.get(p.sceneId) || [] };
+        });
+        const retried = await callAISafe<any[]>(
+          `These scenes were assigned compositions that are ALREADY USED elsewhere in the video. Assign each a DIFFERENT form+place (rotate to another form of the subject or another location):\n${JSON.stringify(retryPayload)}`,
+          buildPlannerInstruction(globalContext, usedNow), PLAN_SCHEMA, 0.75, limitPromptConcurrency
+        );
+        if (Array.isArray(retried)) {
+          const fixedIds = new Set<number>();
+          for (const p of retried) {
+            if (typeof p?.sceneId !== 'number' || !p.form || !p.place) continue;
+            const k = comboKey(p.form, p.place);
+            if (!seen.has(k)) { seen.add(k); accepted.push(p); fixedIds.add(p.sceneId); }
+          }
+          dupes = dupes.filter(p => !fixedIds.has(p.sceneId));
+        }
+      } catch { /* giữ nguyên bản trùng — đa dạng xếp sau "không lỗi" */ }
+      accepted.push(...dupes);                             // vẫn nhận: trùng còn hơn thiếu plan
+    }
+    for (const p of accepted) {
+      plans.set(p.sceneId, p);
+      ledgerPush(comboKey(p.form, p.place), `${p.form} / ${p.place}`);
+    }
+  }
+  return plans;
+};
+
+// Chỉ thị ràng buộc bơm vào payload từng cảnh của Bước 3.
+const planToDirective = (p: VisualPlan | undefined, hasRequiredChars: boolean): string => {
+  if (!p) return '';
+  // Cảnh có nhân vật bắt buộc thì planner không được phép ép "không người".
+  const person = (!p.person_action || /^none$/i.test(p.person_action.trim()))
+    ? (hasRequiredChars ? '' : 'none — object/place-only scene, keep it alive with environmental motion')
+    : p.person_action.trim();
+  const parts = [`FORM: ${p.form}`, `PLACE: ${p.place}`, `ERA: ${p.era}`, `SHOT: ${p.shot}`];
+  if (person) parts.push(`PERSON: ${person}`);
+  return parts.join(' | ');
+};
+
 export const extractContextAndCharacters = async (rawScript: string): Promise<{ context: string; characters: CharacterIdentity[] }> => {
   if (!rawScript || rawScript.trim().length === 0) return { context: "", characters: [] };
   try {
@@ -1184,6 +1332,28 @@ export const generatePromptsForSingleSegment = async (
   // BƠM TỪ ĐIỂN NHÂN VẬT VÀO BƯỚC CUỐI
   const charProfiles = buildCharacterProfiles(characters);
 
+  // 👉 B2.5 — VISUAL PLANNER: quy hoạch bố cục TOÀN phân đoạn trước khi viết prompt.
+  // Nhân vật bắt buộc của từng cảnh tính trước để planner không ép "không người"
+  // vào cảnh có nhân vật. Chạy nối tiếp qua plannerChain để sổ đa dạng nhất quán
+  // khi nhiều phân đoạn chạy song song. Planner hỏng → bỏ qua, Bước 3 chạy như cũ.
+  const segCharIndex = buildCharacterIndex(characters);
+  const requiredCharsByScene = new Map<number, string[]>();
+  for (const s of segment.scenes) {
+    const haystack = foldText(`${s.sourceText || ''} ${s.visualDescription || ''} ${s.characterDetails || ''}`);
+    const req: string[] = [];
+    for (const c of segCharIndex) {
+      if ((c.aliasLower && haystack.includes(foldText(c.aliasLower))) || (c.promptLower && haystack.includes(foldText(c.promptLower))) || (c.originalLower && haystack.includes(foldText(c.originalLower)))) req.push(c.canonical);
+    }
+    requiredCharsByScene.set(s.id, req);
+  }
+  let visualPlans = new Map<number, VisualPlan>();
+  if (options?.visualPlanner !== false) {
+    onStatusUpdate?.('Đang quy hoạch bố cục cảnh (chống lặp)...');
+    const run = plannerChain.then(() => planVisualsForScenes(segment.scenes, globalContext, requiredCharsByScene, onStatusUpdate));
+    plannerChain = run.catch(() => {});
+    try { visualPlans = await run; } catch { /* planner là tầng phụ trợ — bỏ qua */ }
+  }
+
   const systemInstruction = `You are a Master Cinematography Prompt Engineer for Veo 3 video generation.
 For each input scene, output a JSON object with these fields. The user's code assembles them into the final video prompt. OUTPUT STRICTLY VALID JSON.
 
@@ -1208,6 +1378,8 @@ Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each
 
 ${STORYTELLING_RULE}
 Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': give the viewer ONE clear subject per scene — people when they genuinely add interest, otherwise the object/place itself in a varied form/setting/era (per S2/S2b, never a repeated composition) — never paperwork/maps/text props, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7). NEVER depict the instant an object changes form — choose BEFORE or AFTER, object in ONE place only (per S8).
+
+VISUAL PLAN (BINDING ART DIRECTION): when a scene input includes "VISUAL_PLAN", the art director assigned it to keep the whole video varied — treat it as BINDING. Build the scene EXACTLY on that FORM of the subject, in that PLACE and ERA, with that SHOT. If PERSON says "none", write an object/place-only scene: no people anywhere, empty 'expression', kept alive by environmental motion. If PERSON names someone, that exact person + action is the scene's human element. The scene's own text still supplies the story meaning; the plan controls the composition. If the plan ever contradicts a safety rule (SINGLE-MOMENT, ANTI-ARTIFACT, S8), the safety rule wins.
 
 CONTEXT: ${globalContext}
 
@@ -1379,13 +1551,15 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
 
       const makePayload = (s: Scene) => {
         const present = detectPresentChars(s);
+        const planDirective = planToDirective(visualPlans.get(s.id), present.length > 0);
         return {
           id: s.id,
           visualDescription: s.visualDescription,
           characterDetails: s.characterDetails,
           settingTime: s.settingTime,
           REQUIRED_NAMES_IN_PROMPT: present,
-          REQUIRED_FULL_DESCRIPTIONS: fullDescriptionBlocks(present)
+          REQUIRED_FULL_DESCRIPTIONS: fullDescriptionBlocks(present),
+          ...(planDirective ? { VISUAL_PLAN: planDirective } : {})
         };
       };
 
