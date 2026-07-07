@@ -552,6 +552,8 @@ S8. NO TRANSFORMATION MOMENTS. Video models CANNOT make an object change form mi
    - MATERIAL CONTRAST: keep the featured object visually DISTINCT from the clothing/background touching it (different color and texture) — similar colors bleed into each other (a pale banana against a cream knit sweater inherits the knit texture). State the contrast explicitly when needed (e.g. "a yellow banana held against a dark blue apron").
    - STATE ANCHOR WHEN HANDLED: the instant a hand touches, holds or lifts an object with a famous transformation (fruit that gets peeled, eggs, bottles, wrapped goods), the model tends to START that transformation by itself — a lifted banana begins peeling on its own. Whenever a person handles such an object, EXPLICITLY anchor its state in the narrative: "the banana remains whole, unpeeled and intact for the entire shot". Even better: have the person handle the CONTAINER instead (lifts the bowl of bananas, carries the crate, sets down the basket) so the hand never touches the fruit directly.
    - ONE-INSTANCE RULE: the featured object exists in exactly ONE place in the frame. If it is in someone's hands, its source (tree, pile, plant) must be OUT of frame and NOT mentioned — describing both invites the model to draw the object twice.
+   - EXACT COUNT: always state the exact quantity of the featured object ("a single banana", "three green bottles", "one sealed envelope", "a bunch of bananas"). An object without a stated count often renders as two overlapping copies.
+   - NEVER WRITE THE WORD "peel": even as a harmless noun ("its yellow peel catching the light") or inside a negation ("the peel does not open"), the word itself primes the model to start peeling. Say "skin" instead ("its smooth yellow skin"). Same logic for other trigger nouns: prefer "shell" over "cracked shell", "wrapper stays sealed" over "unwrapping".
    - Allowed object interactions are RIGID-BODY ONLY: carry, lift, hold, place down, stack, load, turn over, push a cart — the object moves but never changes shape.
 === END VISUAL STORYTELLING RULE ===`;
 
@@ -595,6 +597,8 @@ const BANNED_VISUALS: { re: RegExp; label: string }[] = [
   { re: /\bwounded\b/i, label: 'wounded' },
   { re: /\barmed\s+(?:men|group|fighters|exiles|force)\b/i, label: 'armed men' },
   { re: /\b(?:rifles?|guns?|weapons?)\s+at the ready\b/i, label: 'weapon at the ready' },
+  { re: /\b(?:bombers?|warplanes?|fighter\s+(?:jets?|planes?)|military\s+(?:aircraft|jets?))\b/i, label: 'warplane' },
+  { re: /\bair\s*(?:strikes?|raids?)\b/i, label: 'air raid' },
   // Hành động BIẾN ĐỔI vật thể (model không cắt/tách/bóc/nghiền/gặt... được — sẽ nhân
   // bản vật thể). Chỉ bắt dạng ĐỘNG TỪ chủ động (verb + the/a/an/off/open/down...) —
   // danh từ "banana slices", quá khứ phân từ "freshly harvested" vẫn hợp lệ.
@@ -624,10 +628,19 @@ const findBannedVisual = (text: string): string | null => {
 // 👉 NEO TRẠNG THÁI (tất định): vật thể có "biến đổi kinh điển" (chuối→bóc vỏ, trứng→đập,
 // chai→mở...) hễ bị tay cầm/nhấc là model tự khởi động biến đổi đó. Nếu prompt có cảnh
 // cầm nắm các vật này mà CHƯA có câu neo trạng thái → code tự nối thêm, không chờ AI nhớ.
-const HANDLED_OBJECT_RE = /\b(?:holds?|holding|lifts?|lifting|picks?\s+up|picking\s+up|carr(?:y|ies|ying)|grasps?|grips?|gripping|raises?|raising|reach(?:es|ing)?\s+for)\b[^.!?]{0,60}?\b(bananas?|oranges?|tangerines?|apples?|mango(?:es|s)?|peach(?:es)?|pears?|grapes?|watermelons?|pineapples?|coconuts?|corn|eggs?|bottles?|jars?|(?:tin|metal)\s+cans?|envelopes?|letters?|gifts?|presents?|packages?|parcels?|loa(?:f|ves)|bread)\b/i;
-const STATE_ANCHOR_RE = /\b(?:remains?|stays?|kept?)\b[^.!?]{0,40}\b(?:whole|intact|unpeeled|unopened|unchanged|sealed|closed)\b|\b(?:unpeeled|unopened|skin intact)\b/i;
+const RISKY_NOUNS = 'bananas?|oranges?|tangerines?|apples?|mango(?:es|s)?|peach(?:es)?|pears?|grapes?|watermelons?|pineapples?|coconuts?|corn|eggs?|bottles?|jars?|(?:tin|metal)\\s+cans?|envelopes?|letters?|gifts?|presents?|packages?|parcels?|loa(?:f|ves)|bread';
+// Loại trừ: cây/vườn/lá... (cảnh đồn điền không cần neo) và nghĩa bóng (banana republic/trade...).
+const RISKY_NOUN_EXCLUDE = '(?!\\s+(?:trees?|plants?|groves?|lea(?:f|ves)|plantations?|rows|fields?|republic|industry|trade|business|company|market|crops?|boom|wars?|empire))';
+const HANDLED_OBJECT_RE = new RegExp('\\b(?:holds?|holding|lifts?|lifting|picks?\\s+up|picking\\s+up|carr(?:y|ies|ying)|grasps?|grips?|gripping|raises?|raising|reach(?:es|ing)?\\s+for)\\b[^.!?]{0,60}?\\b(' + RISKY_NOUNS + ')\\b' + RISKY_NOUN_EXCLUDE, 'i');
+// Vật rủi ro là CHỦ THỂ TĨNH (nằm/treo/đặt trên bàn) cũng tự biến đổi nếu thiếu neo —
+// ảnh thực tế: chuối nằm trên quầy bếp vẫn tự bung vỏ khi câu neo yếu ("rests intact").
+// Cho phép tối đa 2 tính từ chen giữa mạo từ và danh từ ("a sealed envelope", "a ripe yellow banana").
+const STATIC_SUBJECT_RE = new RegExp('\\b(?:a|an|the|one|single|ripe|yellow|green|whole)\\s+(?:[a-z][a-z-]*\\s+){0,2}(' + RISKY_NOUNS + ')\\b' + RISKY_NOUN_EXCLUDE + '[^.!?]{0,50}?\\b(?:rests?|resting|sits?|sitting|lies?|lying|hangs?|hanging|placed|stands?)\\b', 'i');
+const STATE_ANCHOR_RE = /\b(?:remains?|stays?|kept?)\b[^.!?]{0,40}\b(?:whole|intact|unpeeled|unopened|unchanged|sealed|closed)\b|\b(?:unpeeled|unopened|skin intact|skin unbroken)\b/i;
+// Đã có từ chỉ số lượng gần vật thể chưa? Chưa có → vật đơn lẻ hay bị render thành 2.
+const COUNT_WORD_RE = /\b(?:one|single|two|three|four|five|six|a few|several|a pair of|a bunch of|a cluster of|a pile of|a row of|a basket of|a bowl of|a crate of|a stack of|dozens?)\b/i;
 const buildStateAnchor = (text: string): string => {
-  const m = text.match(HANDLED_OBJECT_RE);
+  const m = text.match(HANDLED_OBJECT_RE) || text.match(STATIC_SUBJECT_RE);
   if (!m || STATE_ANCHOR_RE.test(text)) return '';
   const noun = m[1].toLowerCase();
   let state = 'completely whole and intact';                       // mặc định
@@ -638,7 +651,55 @@ const buildStateAnchor = (text: string): string => {
   else if (/bottle|jar|can/.test(noun)) state = 'sealed and unopened';
   else if (/envelope|letter|gift|present|package|parcel/.test(noun)) state = 'sealed, wrapped and unopened';
   else if (/loa|bread/.test(noun)) state = 'completely whole and uncut';
-  return `The ${noun} remains ${state} for the entire shot — nothing peels, opens or splits.`;
+  // Vật số ít mà prompt chưa nói rõ số lượng → chốt "exactly one" (chống nhân đôi).
+  // Câu neo KHÔNG dùng từ "peel" — chính từ đó mồi model bóc vỏ (kể cả trong câu phủ định).
+  const quantity = (!noun.endsWith('s') && !COUNT_WORD_RE.test(text)) ? `Exactly one ${noun} in frame. ` : '';
+  return `${quantity}The ${noun} remains ${state} from the first frame to the last.`;
+};
+
+// 👉 SỬA TẤT ĐỊNH TRÊN NỘI DUNG (chạy trước khi ghép đuôi negative — không đụng vào đuôi):
+// Fix B: danh từ "peel" ở phần khẳng định ("its yellow peel") tự mồi model khởi động
+// bóc vỏ → thay bằng "skin". Không đụng "unpeeled"/"peeling" (có biên từ riêng).
+const fixPeelNoun = (content: string): string =>
+  content.replace(/\bpeel(s)?\b/gi, (mm) => {
+    const base = mm === mm.toUpperCase() ? 'SKIN' : (mm[0] === 'P' ? 'Skin' : 'skin');
+    const plural = /s$/i.test(mm) ? (mm.endsWith('S') ? 'S' : 's') : '';
+    return base + plural;
+  });
+// Fix E: đồng hồ điện tử = chữ số đọc được = render ra ký tự rác → ép sang analog trơn.
+const fixDigitalClock = (content: string): string =>
+  content.replace(/\bdigital\s+(clocks?|watch(?:es)?)\b/gi, 'blank-faced analog $1');
+// Fix E: bất kỳ mặt đồng hồ nào cũng phải trơn không số — nếu prompt nhắc đồng hồ mà
+// chưa neo "blank-faced" thì code tự nối câu neo (số trên mặt đồng hồ luôn render hỏng).
+const CLOCK_RE = /\b(?:clocks?|wrist\s*watch(?:es)?|pocket\s+watch(?:es)?|watch\s+faces?)\b/i;
+const CLOCK_BLANK_RE = /\bblank[- ]faced\b|\bno (?:readable )?(?:numerals|numbers|digits)\b|\bwithout (?:numerals|numbers|digits)\b/i;
+const buildClockAnchor = (content: string): string =>
+  CLOCK_RE.test(content) && !CLOCK_BLANK_RE.test(content)
+    ? 'Every clock face is plain and blank — no numerals, no readable markings.'
+    : '';
+
+// 👉 ĐUÔI NEGATIVE THEO NGỮ CẢNH (Fix D): cụm "natural hands / anatomy" CHỈ được xuất
+// hiện khi cảnh thực sự có người — nhắc "hands" trong cảnh không người khiến model tự
+// vẽ thêm bàn tay vào khung hình (lỗi đã gặp thật). Cảnh vật-thể-thuần dùng đuôi riêng,
+// cấm hẳn tay/bộ phận cơ thể lọt khung. (Fix F: cả hai đuôi cấm thêm chất liệu giả CGI.)
+const NEGATIVE_TAIL_PERSON = "Consistent anatomy, natural hands, stable proportions. Avoid: extra or deformed limbs and fingers, face warping, morphing, duplicated people or objects, objects peeling or splitting on their own, flicker, plastic or beauty-filter skin, CGI look, 3D render, over-smooth gradients, readable text, watermark, maps or documents, dense crowds.";
+const NEGATIVE_TAIL_OBJECT = "Stable forms and proportions. Avoid: morphing, warping, duplicated objects, objects peeling or splitting on their own, human hands or body parts entering the frame, flicker, CGI look, 3D render, over-smooth gradients, readable text, watermark, maps or documents.";
+const NEGATIVE_TAILS = [NEGATIVE_TAIL_PERSON, NEGATIVE_TAIL_OBJECT];
+const stripNegativeTails = (text: string): string => {
+  let out = text;
+  for (const t of NEGATIVE_TAILS) out = out.split(t).join(' ');
+  return out;
+};
+// Cảnh có người không? Quét RỘNG (nhầm sang "có người" chỉ quay về hành vi cũ — vô hại;
+// nhầm sang "không người" mới mất lưới anatomy) nhưng phải bỏ các cụm PHỦ ĐỊNH người
+// ("no people in sight") trước khi quét, kẻo cảnh vật-thể bị gắn nhầm đuôi person.
+const PERSON_NEG_RE = /\bno (?:people|humans?|one|body)\b|\bnobody\b|\bunattended\b|\bempty of people\b|\bwithout (?:people|anyone|a person)\b|\bdeserted\b/gi;
+const PERSON_RE = /\b(?:man|men|woman|women|person|people|human|figures?|farmer|worker|soldier|sailor|fisherman|trader|merchant|vendor|villager|laborer|labourer|porter|foreman|cook|baker|blacksmith|weaver|driver|rider|guard|officer|clerk|engineer|doctor|nurse|teacher|student|monk|priest|nun|mother|father|wife|husband|son|daughter|family|child|children|boy|girl|baby|infant|elder|couple|gentleman|lady|folk|crowd|he|she|his|her)\b|\bhands?\b|\b\d+\s*-?\s*year-old\b/i;
+const pickNegativeTail = (p: any, content: string): string => {
+  const hasExpression = typeof p?.expression === 'string' && p.expression.trim().length > 0;
+  const hasSubjects = typeof p?._validation_subjects === 'string' && p._validation_subjects.trim().length > 0;
+  const scanBase = content.replace(PERSON_NEG_RE, ' ');
+  return (hasExpression || hasSubjects || PERSON_RE.test(scanBase)) ? NEGATIVE_TAIL_PERSON : NEGATIVE_TAIL_OBJECT;
 };
 
 // 👉 QUY TẮC LÕI: Mỗi cảnh 8 giây CHỈ được là MỘT khoảnh khắc liên tục, MỘT bối cảnh,
@@ -1115,7 +1176,9 @@ export const generatePromptsForSingleSegment = async (
   if (segment.scenes.length === 0) return { items: [] };
   const colorMoodDesc = getColorDescription(colorStyle);
   
-  const finalStyleStr = styleSummary ? styleSummary.trim() : 'Cinematic realistic 35mm';
+  // 👉 GÓI REALISM (Fix F): mặc định nghiêng hẳn về "trông như phim tài liệu quay thật"
+  // — grain nhẹ, ánh sáng tự nhiên không hoàn hảo, màu trung thực — thay vì chất CGI bóng bẩy.
+  const finalStyleStr = styleSummary ? styleSummary.trim() : 'authentic documentary realism, shot on 35mm film, subtle film grain, natural imperfect lighting, true-to-life color';
   const techDetailsStr = styleAnalysis ? `Technical rendering details to follow: ${styleAnalysis}` : '';
 
   // BƠM TỪ ĐIỂN NHÂN VẬT VÀO BƯỚC CUỐI
@@ -1206,6 +1269,7 @@ ABSOLUTE MANDATORY RULES:
 4. COLOR GRADING and quality anchors (HDR, pro color grading, realistic textures...) live in 'style_tail' ONLY — never duplicated into 'lighting' or 'setting'. 'lighting' stays a bare ≤10-word light description.
 5. No word "cut" anywhere. No location change, no time jump, no second action — ONE continuous moment only (see SINGLE-MOMENT RULE).
 6. ARTIFACT-FREE OVER CINEMATIC: obey the ANTI-ARTIFACT RULE first. Pull vocabulary from the STOCK-SAFE GLOSSARY; keep framing Medium/Wide, one gentle slow camera move, actions simple. Never trade safety for flair.
+6b. REALISM OVER GLOSS: the target look is real archival/documentary footage shot on film — NOT a polished CGI render. In 'style_tail' favor grounded anchors (subtle film grain, natural imperfect lighting, true-to-life color, slight lens softness). NEVER write "hyper-realistic", "ultra HD", "8K", "flawless", "perfect", "stunning" — those push the model toward plastic CGI skin and over-smooth gradients.
 ${options?.audioMode !== 'keep' ? '7. AMBIENT-ONLY AUDIO: describe ONLY visuals. No dialogue, quotes, on-screen text, voiceover. If sound is implied, treat it as quiet ambient environmental sound only — no dialogue, no music.' : ''}
 DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines the subject or its ACTION, (b) pins down something the model would otherwise guess wrong (era, ethnicity, material contrast, object state), or (c) sets style (style_tail only). Longer is NOT better: past ~120 content words the subject and ACTION lose weight and the output drifts.
 - narrative preserves every VERBATIM_BLOCK in full, but otherwise MAX 50 words — one ACTION per subject, no padding.
@@ -1216,10 +1280,9 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
   const batches: Scene[][] = [];
   for (let i = 0; i < segment.scenes.length; i += PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + PROMPT_BATCH_SIZE));
 
-  // 👉 Cue KHẲNG ĐỊNH (consistent anatomy...) đặt trước, rồi mới tới danh sách phủ định
-  // NGẮN & CỤ THỂ nhắm đúng lỗi hay gặp — theo đúng cách VEO 3 phản hồi tốt nhất.
-  const NEGATIVE_TAIL = "Consistent anatomy, natural hands, stable proportions. Avoid: extra or deformed limbs and fingers, face warping, morphing, duplicated people or objects, objects peeling or splitting on their own, flicker, plastic skin, readable text, watermark, maps or documents, dense crowds.";
-
+  // 👉 Cue KHẲNG ĐỊNH đặt trước, rồi mới tới danh sách phủ định NGẮN & CỤ THỂ — theo
+  // đúng cách VEO 3 phản hồi tốt nhất. Đuôi negative CHỌN THEO NGỮ CẢNH (Fix D):
+  // cảnh có người → đuôi anatomy/hands; cảnh vật-thể-thuần → đuôi riêng cấm tay người.
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
     const dotEnd = (s: string) => (!s ? '' : (/[.!?]$/.test(s) ? s : s + '.'));
@@ -1238,8 +1301,8 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
       tail = dotEnd(tail);
     }
     segs.push(tail);
-    segs.push(NEGATIVE_TAIL);
-    return segs.join(' ');
+    const content = segs.join(' ');
+    return `${content} ${pickNegativeTail(p, content)}`;
   };
 
   const executeWithProvider = async (providerId: string): Promise<PromptItem[]> => {
@@ -1289,8 +1352,8 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
           }
         }
         // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ đọc được/bạo lực/đám đông dày đặc).
-        // Bỏ phần NEGATIVE_TAIL trước khi quét — đuôi negative chứa chính các từ cấm.
-        const contentOnly = promptText.replace(NEGATIVE_TAIL, '');
+        // Bỏ đuôi negative (cả 2 biến thể) trước khi quét — đuôi chứa chính các từ cấm.
+        const contentOnly = stripNegativeTails(promptText);
         const bannedVis = findBannedVisual(contentOnly);
         if (bannedVis) return { ok: false, reason: `banned visual "${bannedVis}" — retell with people + setting instead` };
         // 👉 Chống prompt phình (pha loãng chủ thể + hành động): vượt ngân sách từ →
@@ -1327,7 +1390,24 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
       };
 
       const pushAccepted = (pi: any, scene: Scene) => {
-        let finalPromptStr = assembleFinalPrompt(pi);
+        // 👉 CHỐT CHẶN CUỐI (tất định): mọi đường ra — vòng batch, vòng 3 lọt lưới,
+        // cứu hộ từng cảnh, fallback copy Bước 2 — đều đi qua đây.
+        // 1) Tách nội dung khỏi đuôi negative để các bước sửa không đụng vào đuôi.
+        const assembled = assembleFinalPrompt(pi);
+        const usedTail = NEGATIVE_TAILS.find(t => assembled.includes(t)) || '';
+        let content = usedTail ? assembled.split(usedTail).join(' ').trim() : assembled;
+        // 2) Sửa tất định trên nội dung: danh từ "peel"→"skin" (Fix B), đồng hồ điện
+        //    tử → analog trơn (Fix E).
+        content = fixDigitalClock(fixPeelNoun(content));
+        // 3) Nối câu neo: vật rủi ro bị cầm/nhấc HOẶC nằm tĩnh mà thiếu neo trạng thái
+        //    → neo "nguyên vẹn + exactly one" (Fix A+C); mặt đồng hồ chưa neo trơn số
+        //    → neo "blank, no numerals" (Fix E). Neo chèn TRƯỚC đuôi negative.
+        const anchors: string[] = [];
+        const stateAnchor = buildStateAnchor(content);
+        if (stateAnchor) anchors.push(stateAnchor);
+        const clockAnchor = buildClockAnchor(content);
+        if (clockAnchor) anchors.push(clockAnchor);
+        let finalPromptStr = [content, ...anchors, usedTail].filter(Boolean).join(' ');
         if (customPromptSuffix.trim()) {
            const suffix = customPromptSuffix.trim();
            if (finalPromptStr.endsWith('.')) {
@@ -1336,18 +1416,8 @@ DENSITY — EVERY WORD MUST EARN ITS PLACE. A word stays only if it (a) defines 
                finalPromptStr += ", " + suffix;
            }
         }
-        // 👉 CHỐT CHẶN CUỐI (tất định): mọi đường ra — vòng batch, vòng 3 lọt lưới,
-        // cứu hộ từng cảnh, fallback copy Bước 2 — đều đi qua đây. Lọc SAU khi ghép
-        // suffix để cả suffix người dùng gõ cũng được quét.
+        // 4) Quét tên thật SAU CÙNG để cả suffix người dùng gõ cũng được lọc.
         finalPromptStr = scrubRealNames(finalPromptStr, characters);
-        // 👉 Cảnh cầm/nhấc vật có "biến đổi kinh điển" mà thiếu câu neo trạng thái
-        // → tự nối neo (chèn trước đuôi negative) để vật không tự bung vỏ/mở nắp.
-        const stateAnchor = buildStateAnchor(finalPromptStr);
-        if (stateAnchor) {
-          finalPromptStr = finalPromptStr.includes(NEGATIVE_TAIL)
-            ? finalPromptStr.replace(NEGATIVE_TAIL, `${stateAnchor} ${NEGATIVE_TAIL}`)
-            : `${finalPromptStr} ${stateAnchor}`;
-        }
         validItems.push({
           sceneId: scene.id,
           sourceText: scene.sourceText,
