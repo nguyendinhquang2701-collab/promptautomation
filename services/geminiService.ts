@@ -474,7 +474,7 @@ const PROMPT_SCHEMA = {
     properties: {
       sceneId: { type: Type.INTEGER },
       shot: { type: Type.STRING, description: "Shot size + neutral angle + lens + DOF, Medium/Wide preferred. e.g. 'Static medium-wide eye-level shot, 35mm, moderate depth of field'. Never a tight close-up on hands." },
-      narrative: { type: Type.STRING, description: "One flowing paragraph. Introduce each character with their VERBATIM_BLOCK inline (first mention only), then give each ONE simple, stable action — woven together naturally. Keep actions calm and single (standing, sitting, looking, slowly turning, gently stirring); no fast or intricate motion. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) stands quietly by the window as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) sits calmly at the desk, gaze lifting toward Cecily Alderton.' Do NOT list all characters first then write actions separately." },
+      narrative: { type: Type.STRING, description: "One flowing paragraph. Introduce each character with their VERBATIM_BLOCK inline (first mention only), then give each ONE visible, continuous ACTION in progress — woven together naturally. Prefer real whole-body ACTIONS (carrying, walking, sweeping, rowing, loading, riding) over static poses; calm pace, no fast or intricate motion. e.g. 'Cecily Alderton (slender 23-year-old English woman, warm ivory skin...) carries a wicker basket across the courtyard as Adrian Ashbourne (tall 35-year-old British Regent, broad-shouldered...) leads a grey horse toward the stable gate.' Do NOT list all characters first then write actions separately." },
       expression: { type: Type.STRING, description: "Subtle facial expression / emotional beat per character. Empty string if no person on screen." },
       setting: { type: Type.STRING, description: "Environment, period, weather, time of day, props in frame, plus any gentle environmental motion (smoke, steam, candle flicker, wind)." },
       lighting: { type: Type.STRING, description: "Light direction, color temperature, contrast, key/fill/rim, named scheme. Prefer soft over hard light." },
@@ -495,7 +495,8 @@ ANGLES (keep neutral): eye-level, slight low-angle, slight high-angle, straight-
 LENSES: 24mm wide, 35mm normal, 50mm standard. (Long tele / macro / fisheye NOT used — they exaggerate distortion.)
 DOF: moderate depth of field, deep focus. (No rack focus, no split focus.)
 CAMERA_MOTION (choose exactly ONE gentle move per shot): slow push-in, slow pull-back, slow pan left, slow pan right, gentle lateral drift left/right, slow tilt up/down, static lock-off. A single slow smooth move (DEFAULT, preferred — keeps the frame alive). NEVER combine moves; NEVER fast tracking, crane, jib, handheld shake, gimbal runs, orbit, whip pan, zoom, drone, POV walking.
-ENVIRONMENTAL_MOTION (use this INSTEAD of body motion to keep the shot alive): drifting smoke, rising steam, flickering candle/firelight, wind stirring fabric or grass, falling dust motes, gentle ripples on water, slow-drifting clouds, embers floating.
+SAFE_ACTIONS (ONE per person — whole-body, rhythmic, rigid-object work; these render cleanly and give the viewer something to WATCH): walking steadily, striding across a field, climbing steps, marching in file, riding a horse or cart, rowing a boat, leading a mule, carrying a crate on the shoulder, hauling a sack, shouldering a yoke of baskets, pushing or pulling a cart, loading or unloading crates, stacking sacks, sweeping a floor, raking leaves, hoeing soil, watering plants with a can, hammering at an anvil (Medium/Wide only), stirring a large pot with a long wooden paddle, sowing seeds by hand, hanging cloth to dry.
+ENVIRONMENTAL_MOTION (layer this ON TOP of the subject's ACTION; it replaces body motion only in object-only scenes): drifting smoke, rising steam, flickering candle/firelight, wind stirring fabric or grass, falling dust motes, gentle ripples on water, slow-drifting clouds, embers floating.
 LIGHTING_SCHEMES: soft diffused daylight, golden hour 5500K, overcast soft light, candlelight, motivated practical, Rembrandt, rim/back light, side light, top light. Prefer SOFT over hard light (hard light exaggerates artifacts).
 COMPOSITION: rule of thirds, centered framing, symmetrical, negative space, leading lines, foreground/midground/background layering, depth cues.
 EMOTION_TAGS: contemplative, resolute, calm, solemn, tender, melancholic, awed, weary, watchful, faint smile, steady gaze, softened brow. (Keep expressions subtle and natural.)
@@ -508,11 +509,11 @@ GOAL: clean, error-free footage for historical B-roll / stock replacement. A sim
 
 DO:
 - Prefer Medium/Wide framing on people so bodies and hands stay small and stable.
-- Give each person ONE single simple action, or a still, stable pose (standing, sitting, looking, slowly turning the head, gently stirring, slowly walking).
+- ACTION FIRST: every person on screen should be visibly MID-ACTION — performing ONE continuous, whole-body ACTION that spans the full 8 seconds (pick from SAFE_ACTIONS in the glossary: walking steadily, carrying a crate on the shoulder, pushing a cart, rowing, sweeping, hoeing soil, loading sacks...). A still pose (standing watch, mourning, gazing at the horizon) is allowed ONLY when the scene truly calls for stillness — NEVER as the default. A person doing real work is far more watchable than a person posing.
 - Keep hands relaxed, low-detail, or out of tight framing. NEVER stage intricate finger work / counting / complex object manipulation in close view.
-- Keep the number of people LOW and interaction MINIMAL. If several people are present, they mostly stand/sit calmly; no tangled group action.
+- Keep the number of people LOW and interaction MINIMAL. If several people are present, each performs at most ONE simple ACTION (walking, carrying, working side by side) without physical entanglement.
 - OBJECT SCENES: object-only shots are welcome — vary the form/setting/era between scenes (see VISUAL STORYTELLING RULE S2b) and keep them alive with environmental motion + one gentle camera move. If a person joins the object, keep the object as the focal anchor with ONE gentle rigid interaction (holding, reaching, placing down) at Medium/Wide distance.
-- Keep every shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) plus at most one calm action.
+- Keep every shot alive with ENVIRONMENTAL_MOTION (smoke, steam, candle flicker, wind, ripples) ALONGSIDE the subject's one continuous ACTION — environment replaces body motion only in object-only scenes.
 
 AVOID (these are the top causes of AI artifacts):
 - Tight close-ups of hands or faces performing detailed motion.
@@ -530,7 +531,7 @@ S1. SHOW THE STORY, NOT PAPERWORK. When the narration mentions a place, activity
    - "bananas spread to East Africa" → traders unloading banana bunches from a wooden sailing boat at a coastal market — NOT a map with arrows.
    - "the company owned 42% of the land" → a lone farmer standing tiny before an endless fenced plantation stretching to the horizon — NOT documents or charts.
    - "a court conviction in 2024" → lawyers in suits walking up modern courthouse steps — NOT a newspaper headline.
-S2. ONE CLEAR SUBJECT PER FRAME — PEOPLE ARE OPTIONAL. Every scene needs ONE subject the viewer instantly recognizes, but that subject does NOT have to be a person. Include a person only when they genuinely add interest: period workers, soldiers, traders, the story's characters. A generic modern person adds nothing — for scenes about an object or place, the object/place ITSELF is the better subject, kept alive with environmental motion and one gentle camera move.
+S2. ONE CLEAR SUBJECT PER FRAME — PEOPLE ARE OPTIONAL. Every scene needs ONE subject the viewer instantly recognizes, but that subject does NOT have to be a person. Include a person only when they genuinely add interest: period workers, soldiers, traders, the story's characters. And when a person IS present, show them mid-ACTION — visibly doing one continuous piece of work (see SAFE_ACTIONS), not posing. A generic modern person adds nothing — for scenes about an object or place, the object/place ITSELF is the better subject, kept alive with environmental motion and one gentle camera move.
 S2b. VARIETY ACROSS SCENES (anti-repetition — the real boredom killer). When the same topic recurs through the script, NEVER repeat the same composition scene after scene. Rotate through the subject's WHOLE WORLD along three axes — this applies to ANY topic, not just food:
    • FORMS (the subject at different stages/scales): raw material → growing/being made → the finished thing → many of them together → transported → displayed. E.g. a fruit: single fruit → hanging bunch → flowering plant → whole tree → grove rows → crates at the dock → market pile. A sword: glowing steel in the forge → the smith's workshop → the finished blade on a rack → an armory wall of weapons → a museum display. Coffee: red cherries on the branch → terraced hillsides → beans drying in the yard → burlap sacks in a warehouse → a steaming cup.
    • PLACES: where it is born, grown/made, sold, shipped, used — kitchen, jungle, plantation, workshop, village market, port warehouse, ship deck, roadside stand, shop shelf, a home.
@@ -1140,7 +1141,7 @@ ${SINGLE_MOMENT_RULE}
 Apply this to the 'narrative', 'setting' and 'camera_motion' fields: depict ONLY the single selected moment. If the input scene text implies several locations or actions, pick the one most important moment and write the prompt for that alone — silently drop the rest.
 
 ${ANTI_ARTIFACT_RULE}
-Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, give the camera exactly ONE gentle slow move (or static), and lean on environmental motion. Being artifact-free outranks looking cinematic.
+Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person ONE visible continuous ACTION (from SAFE_ACTIONS — working, not posing), give the camera exactly ONE gentle slow move (or static), and layer environmental motion on top. Being artifact-free outranks looking cinematic.
 
 ${STORYTELLING_RULE}
 Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': give the viewer ONE clear subject per scene — people when they genuinely add interest, otherwise the object/place itself in a varied form/setting/era (per S2/S2b, never a repeated composition) — never paperwork/maps/text props, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7). NEVER depict the instant an object changes form — choose BEFORE or AFTER, object in ONE place only (per S8).
@@ -1158,10 +1159,10 @@ ${charProfiles}
 === END DICTIONARY ===
 
 NARRATIVE RULE — how to write the 'narrative' field when characters are present:
-The 'narrative' is ONE flowing paragraph. It must weave each character's VERBATIM_BLOCK together with ONE simple, stable action each — NOT list all characters first and actions after. Keep every action calm and single (standing, sitting, looking, slowly turning the head, gently holding an object). No fast, intricate, or multi-step motion. Interaction between people stays minimal.
+The 'narrative' is ONE flowing paragraph. It must weave each character's VERBATIM_BLOCK together with ONE visible, continuous ACTION each — NOT list all characters first and actions after. Every character should be DOING something the viewer can watch (pick from SAFE_ACTIONS: carrying, walking, sweeping, loading, riding, rowing...); a still pose only when the scene demands stillness. Calm pace, ONE action per person, no fast/intricate/multi-step motion. Interaction between people stays minimal.
 
 PATTERN:
-  "[Character A VERBATIM_BLOCK] [holds one simple pose / does one calm action], while [Character B VERBATIM_BLOCK] [holds one simple pose / does one calm action]; [Character A bare name] [keeps that single quiet action]."
+  "[Character A VERBATIM_BLOCK] [performs one visible ACTION], while [Character B VERBATIM_BLOCK] [performs one visible ACTION]; [Character A bare name] [continues that same single ACTION]."
 
 HOW TO EMBED VERBATIM_BLOCK:
   - Take the exact string from the VERBATIM_BLOCK field in the Character Dictionary (the string inside the quotes "...").
@@ -1175,8 +1176,8 @@ EXAMPLE (3-character scene, follow this narrative pattern — note the calm, sin
     CANONICAL_NAME="Lady Whitmore", VERBATIM_BLOCK: "Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker)"
     CANONICAL_NAME="Clara", VERBATIM_BLOCK: "Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown)"
 
-  ✅ CORRECT narrative (medium-wide, everyone calm and mostly still):
-    "In a medium-wide framing, Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat) stands quietly at the left with a steady, formal posture, while Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker) sits composed in an armchair and Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown) stands near the window; Edmund slowly turns Edmund's head toward the room's center as candle flames flicker and dust drifts in the soft light."
+  ✅ CORRECT narrative (medium-wide, everyone calmly IN ACTION — one action each):
+    "In a medium-wide framing, Edmund (distinguished 38-year-old English lord, dark swept hair, sharp jaw, tall lean frame, navy tailcoat) walks slowly across the hall carrying a silver candlestick, while Lady Whitmore (stately 55-year-old English matriarch, silver-streaked coiffure, burgundy silk gown, pearl choker) sets a porcelain teacup down on the side table and Clara (slender 22-year-old English woman, auburn ringlets, pale ivory skin, white empire-waist gown) draws the heavy curtain open at the window; candle flames flicker and dust drifts in the soft light as Edmund continues Edmund's steady walk toward the doorway."
 
   ❌ WRONG (all descriptions first, actions after):
     "Edmund (distinguished lord). Lady Whitmore (stately matriarch). Clara (slender woman). Edmund stands... Lady Whitmore sits... Clara waits."
