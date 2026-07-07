@@ -72,23 +72,25 @@ const fixFilmLook = (s: string): string =>
    .replace(/\barchival (?:footage|film)\b/gi, 'documentary realism')
    .replace(/\b(?:vintage|old) film (?:look|style|reel|stock|aesthetic)\b/gi, 'period look');
 
-// 👉 Veo hay TỰ bóc vỏ/đập vỡ/mở nắp vật thể khi thấy tay người ở gần + đẩy máy vào —
-// dù prompt đã ghi "whole". Nếu 'action' nhắc tới vật dễ biến đổi (và KHÔNG phải cây/vườn),
-// tự chèn MỘT câu khóa mạnh "giữ nguyên vẹn suốt cảnh". Một hàm tối giản, không quay lại
-// mớ regex nhiều tầng cũ.
-const RISKY_OBJECT_RE = /\b(bananas?|oranges?|tangerines?|mango(?:es)?|apples?|pears?|peach(?:es)?|plums?|eggs?|bottles?|jars?|coconuts?|pineapples?|lemons?|limes?|melons?|watermelons?|loaf|loaves)\b(?!\s+(?:trees?|plants?|groves?|plantations?|orchards?|fields?|lea(?:f|ves)))/i;
-const ALREADY_WHOLE_RE = /\b(?:unpeeled|uncracked|unopened|skin unbroken|nothing (?:peels|opens|cuts)|stays? (?:whole|intact|sealed|closed)|remains? (?:whole|intact|sealed|closed))\b/i;
-const keepObjectWhole = (action: string): string => {
-  if (!action) return action;
-  const m = action.match(RISKY_OBJECT_RE);
-  if (!m || ALREADY_WHOLE_RE.test(action)) return action;
-  const noun = m[1].toLowerCase();
-  let clause: string;
-  if (/banana|orange|tangerine|mango|lemon|lime/.test(noun)) clause = `The ${noun} stays completely whole and unpeeled, its skin unbroken, from the first frame to the last — no hand touches or peels it, nothing opens on its own.`;
-  else if (/egg/.test(noun)) clause = `The ${noun} stays completely whole and uncracked from the first frame to the last — no hand cracks it.`;
-  else if (/bottle|jar/.test(noun)) clause = `The ${noun} stays sealed and unopened from the first frame to the last — no hand opens it.`;
-  else clause = `The ${noun} stays completely whole and intact, its skin unbroken, from the first frame to the last — no hand cuts, peels or opens it.`;
-  return `${action.trim()} ${clause}`;
+// 👉 NGHỊCH LÝ DIFFUSION (người dùng kiểm chứng thực tế): nhắc "unpeeled / whole / peel /
+// skin / intact" về quả CHÍNH LÀ MỒI khiến Veo bóc vỏ nó (như "đừng nghĩ tới con voi").
+// Bản prompt có "whole/unpeeled" → chuối tự bóc; bản BỎ các từ đó → không lỗi. Vậy nên
+// không thêm câu khóa nữa mà XÓA các từ mồi quanh trái cây/trứng, để lại mô tả trung tính.
+const PRODUCE_ALT = 'bananas?|oranges?|tangerines?|mango(?:es)?|apples?|pears?|peach(?:es)?|plums?|lemons?|limes?|coconuts?|pineapples?|melons?|watermelons?|eggs?|fruits?';
+const PRODUCE_RE = new RegExp('\\b(?:' + PRODUCE_ALT + ')\\b', 'i');
+// Tính từ "nguyên vẹn" đứng ngay trước trái cây (cho phép vài tính từ vô hại chen giữa).
+const TRIGGER_ADJ_RE = new RegExp('\\b(?:whole|unpeeled|un-peeled|intact|uncut|unbroken|unopened|unhusked|uncracked)\\s+(?=(?:(?:ripe|fresh|single|yellow|green|small|large|big|golden)\\s+)*(?:' + PRODUCE_ALT + ')\\b)', 'gi');
+const neutralizeProduce = (action: string): string => {
+  if (!action || !PRODUCE_RE.test(action)) return action;
+  let out = action;
+  out = out.replace(TRIGGER_ADJ_RE, '');                                   // "whole/unpeeled banana" → "banana"
+  out = out.replace(/,?\s*(?:its|the|their)\s+(?:skin|peel|shell)\s+(?:unbroken|intact|unopened|whole)\b/gi, ''); // "its skin unbroken"
+  out = out.replace(/,?\s*(?:remaining|remains?|staying|stays?|kept)\b[^.,;]*\b(?:unpeeled|whole|intact|sealed|unbroken)\b[^.,;]*/gi, ''); // mệnh đề neo lạc
+  out = out.replace(/\b(?:un-?peeled|unbroken)\b/gi, '');                  // sót lại đơn lẻ
+  out = out.replace(/\bpeels?\b/gi, 'skin');                              // còn "peel" (noun) → "skin" (an toàn ngữ pháp hơn xóa)
+  out = out.replace(/\bthe\s+fruit\b/gi, 'it');                           // "the (unpeeled) fruit" đã trơ → "it"
+  out = out.replace(/\s{2,}/g, ' ').replace(/\s+([,.;])/g, '$1').replace(/([,;])\s*([,;])/g, '$1').trim();
+  return out;
 };
 
 // 👉 Chốt chặn chính sách (tất định): mô tả nhân vật KHÔNG được chứa chức danh/vai trò
@@ -1476,8 +1478,8 @@ ONE SCENE PER PROMPT (critical): each prompt is a SINGLE continuous moment — O
 
 NO ERRORS (this is the #1 priority — a clean simple shot always beats a fancy one):
 - ONE continuous whole-body action at a calm pace (walking, carrying, rowing, sweeping, loading, planting, speaking calmly, watching). No fast, intricate, or fiddly motion; no fine finger work in close-up.
-- Objects stay WHOLE the entire shot — never cut, peel, slice, break, crack, or open them; never a half-done state. If someone holds a fruit/egg/bottle/parcel, it stays intact.
-- Do NOT build a shot around a hand resting next to, reaching toward, or the camera pushing in on a peelable food object (banana, orange, egg, etc.) — that framing makes the model peel/open it by itself. For such objects, either show them alone (no hand in frame) or have the person doing a clearly unrelated action away from the object.
+- Objects never change form in the shot: no cutting, peeling, slicing, breaking, cracking, or opening, and no half-done states.
+- IMPORTANT for fruit / eggs / bottles / wrapped items: in the 'action' text describe the item PLAINLY ("a ripe banana", "a brown egg", "a glass bottle") and keep any hand interaction rigid (picking up, holding, carrying, placing). Do NOT write the words "peel", "unpeeled", "whole", "intact", "skin", or "unbroken" about it — naming its intact/peel state paradoxically makes the video model start peeling/opening it. Even better, show the item with no hand touching it, or have the person doing an unrelated action nearby.
 - An object appears in only ONE place in the frame (in a hand OR on a surface, never both).
 - At most 3-5 people in sharp focus; larger groups only as soft, out-of-focus background.
 - Every person carries an explicit ethnicity + era-appropriate clothing (default: a white American, era-correct, when the story doesn't specify).
@@ -1603,8 +1605,8 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
 
       const pushAccepted = (pi: any, scene: Scene) => {
         // 👉 CHỐT CHẶN CUỐI (tất định) — mọi đường ra đều qua đây. Đơn giản:
-        // 1) Vật dễ biến đổi (chuối, trứng, chai...) → chèn câu khóa giữ nguyên vẹn.
-        if (typeof pi.action === 'string') pi = { ...pi, action: keepObjectWhole(pi.action) };
+        // 1) Xóa từ mồi bóc vỏ ("whole/unpeeled/skin...") quanh trái cây để Veo không tự bóc.
+        if (typeof pi.action === 'string') pi = { ...pi, action: neutralizeProduce(pi.action) };
         // 2) Nhét hậu tố người dùng (nếu có) vào cuối 'style'.
         if (customPromptSuffix.trim()) {
           const suffix = customPromptSuffix.trim();
