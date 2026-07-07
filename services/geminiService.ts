@@ -544,6 +544,7 @@ S8. NO TRANSFORMATION MOMENTS. Video models CANNOT make an object change form mi
    - AFTER (result already done): the worker carries a freshly harvested banana bunch away — tree OUT of frame / split firewood lies stacked as the man wipes his brow / a farmer carries bundles of harvested rice stalks across the field / a bowl of ground spices sits beside the stone mortar.
    - NO PARTIAL / AMBIGUOUS STATES: an object is either fully INTACT or fully PROCESSED — never half-peeled, half-cut, half-eaten, partially open. A hybrid state forces the model to blend two materials (peel + flesh) and it renders nonsense. A person holds a WHOLE banana; slices sit on a plate FULLY sliced. Prefer intact objects whenever possible.
    - MATERIAL CONTRAST: keep the featured object visually DISTINCT from the clothing/background touching it (different color and texture) — similar colors bleed into each other (a pale banana against a cream knit sweater inherits the knit texture). State the contrast explicitly when needed (e.g. "a yellow banana held against a dark blue apron").
+   - STATE ANCHOR WHEN HANDLED: the instant a hand touches, holds or lifts an object with a famous transformation (fruit that gets peeled, eggs, bottles, wrapped goods), the model tends to START that transformation by itself — a lifted banana begins peeling on its own. Whenever a person handles such an object, EXPLICITLY anchor its state in the narrative: "the banana remains whole, unpeeled and intact for the entire shot". Even better: have the person handle the CONTAINER instead (lifts the bowl of bananas, carries the crate, sets down the basket) so the hand never touches the fruit directly.
    - ONE-INSTANCE RULE: the featured object exists in exactly ONE place in the frame. If it is in someone's hands, its source (tree, pile, plant) must be OUT of frame and NOT mentioned — describing both invites the model to draw the object twice.
    - Allowed object interactions are RIGID-BODY ONLY: carry, lift, hold, place down, stack, load, turn over, push a cart — the object moves but never changes shape.
 === END VISUAL STORYTELLING RULE ===`;
@@ -612,6 +613,23 @@ const findBannedVisual = (text: string): string | null => {
   if (!text) return null;
   for (const b of BANNED_VISUALS) if (b.re.test(text)) return b.label;
   return null;
+};
+
+// 👉 NEO TRẠNG THÁI (tất định): vật thể có "biến đổi kinh điển" (chuối→bóc vỏ, trứng→đập,
+// chai→mở...) hễ bị tay cầm/nhấc là model tự khởi động biến đổi đó. Nếu prompt có cảnh
+// cầm nắm các vật này mà CHƯA có câu neo trạng thái → code tự nối thêm, không chờ AI nhớ.
+const HANDLED_OBJECT_RE = /\b(?:holds?|holding|lifts?|lifting|picks?\s+up|picking\s+up|carr(?:y|ies|ying)|grasps?|grips?|gripping|raises?|raising|reach(?:es|ing)?\s+for)\b[^.!?]{0,60}?\b(bananas?|oranges?|apples?|mango(?:es|s)?|coconuts?|eggs?|bottles?|jars?|loa(?:f|ves)|bread)\b/i;
+const STATE_ANCHOR_RE = /\b(?:remains?|stays?|kept?)\b[^.!?]{0,40}\b(?:whole|intact|unpeeled|unopened|unchanged|sealed|closed)\b|\b(?:unpeeled|unopened|skin intact)\b/i;
+const buildStateAnchor = (text: string): string => {
+  const m = text.match(HANDLED_OBJECT_RE);
+  if (!m || STATE_ANCHOR_RE.test(text)) return '';
+  const noun = m[1].toLowerCase();
+  let state = 'completely whole and intact';                       // mặc định
+  if (/banana|orange|apple|mango|coconut/.test(noun)) state = 'completely whole, unpeeled and intact, skin unbroken';
+  else if (/egg/.test(noun)) state = 'completely whole and uncracked';
+  else if (/bottle|jar/.test(noun)) state = 'sealed and unopened';
+  else if (/loa|bread/.test(noun)) state = 'completely whole and uncut';
+  return `The ${noun} remains ${state} for the entire shot — nothing peels, opens or splits.`;
 };
 
 // 👉 QUY TẮC LÕI: Mỗi cảnh 8 giây CHỈ được là MỘT khoảnh khắc liên tục, MỘT bối cảnh,
@@ -1188,7 +1206,7 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
 
   // 👉 Cue KHẲNG ĐỊNH (consistent anatomy...) đặt trước, rồi mới tới danh sách phủ định
   // NGẮN & CỤ THỂ nhắm đúng lỗi hay gặp — theo đúng cách VEO 3 phản hồi tốt nhất.
-  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, duplicated objects, objects splitting or morphing, oversaturated colors, plastic skin, readable text, watermark, caption, maps, documents, newspapers, calendar pages, dense crowds.";
+  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, duplicated objects, objects splitting or morphing, objects peeling or opening on their own, oversaturated colors, plastic skin, readable text, watermark, caption, maps, documents, newspapers, calendar pages, dense crowds.";
 
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
@@ -1304,6 +1322,14 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
         // cứu hộ từng cảnh, fallback copy Bước 2 — đều đi qua đây. Lọc SAU khi ghép
         // suffix để cả suffix người dùng gõ cũng được quét.
         finalPromptStr = scrubRealNames(finalPromptStr, characters);
+        // 👉 Cảnh cầm/nhấc vật có "biến đổi kinh điển" mà thiếu câu neo trạng thái
+        // → tự nối neo (chèn trước đuôi negative) để vật không tự bung vỏ/mở nắp.
+        const stateAnchor = buildStateAnchor(finalPromptStr);
+        if (stateAnchor) {
+          finalPromptStr = finalPromptStr.includes(NEGATIVE_TAIL)
+            ? finalPromptStr.replace(NEGATIVE_TAIL, `${stateAnchor} ${NEGATIVE_TAIL}`)
+            : `${finalPromptStr} ${stateAnchor}`;
+        }
         validItems.push({
           sceneId: scene.id,
           sourceText: scene.sourceText,
