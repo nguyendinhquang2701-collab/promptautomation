@@ -531,10 +531,10 @@ S1. SHOW THE STORY, NOT PAPERWORK. When the narration mentions a place, activity
    - "the company owned 42% of the land" → a lone farmer standing tiny before an endless fenced plantation stretching to the horizon — NOT documents or charts.
    - "a court conviction in 2024" → lawyers in suits walking up modern courthouse steps — NOT a newspaper headline.
 S2. ONE CLEAR SUBJECT PER FRAME — PEOPLE ARE OPTIONAL. Every scene needs ONE subject the viewer instantly recognizes, but that subject does NOT have to be a person. Include a person only when they genuinely add interest: period workers, soldiers, traders, the story's characters. A generic modern person adds nothing — for scenes about an object or place, the object/place ITSELF is the better subject, kept alive with environmental motion and one gentle camera move.
-S2b. VARIETY ACROSS SCENES (anti-repetition — the real boredom killer). When the same topic recurs through the script, NEVER repeat the same composition scene after scene (not "the banana on the kitchen counter" five times). Rotate through the subject's WHOLE WORLD:
-   • FORMS: the single fruit → a hanging bunch → the flowering plant → the whole tree → rows of trees in a grove → a seedling → crates stacked at the dock → a market pile.
-   • PLACES: modern kitchen, highland jungle, plantation rows, village market, port warehouse, ship deck, roadside stand, supermarket shelf.
-   • ERAS & LIGHT: ancient jungle clearing at misty dawn, colonial-era plantation at harsh noon, 1950s grocery in warm tungsten, modern kitchen in morning sun; rain dripping off leaves, golden hour, drifting fog.
+S2b. VARIETY ACROSS SCENES (anti-repetition — the real boredom killer). When the same topic recurs through the script, NEVER repeat the same composition scene after scene. Rotate through the subject's WHOLE WORLD along three axes — this applies to ANY topic, not just food:
+   • FORMS (the subject at different stages/scales): raw material → growing/being made → the finished thing → many of them together → transported → displayed. E.g. a fruit: single fruit → hanging bunch → flowering plant → whole tree → grove rows → crates at the dock → market pile. A sword: glowing steel in the forge → the smith's workshop → the finished blade on a rack → an armory wall of weapons → a museum display. Coffee: red cherries on the branch → terraced hillsides → beans drying in the yard → burlap sacks in a warehouse → a steaming cup.
+   • PLACES: where it is born, grown/made, sold, shipped, used — kitchen, jungle, plantation, workshop, village market, port warehouse, ship deck, roadside stand, shop shelf, a home.
+   • ERAS & LIGHT: the ancient origin at misty dawn, the colonial/industrial era at harsh noon, the 1950s in warm tungsten, the modern day in morning sun; rain on leaves, golden hour, drifting fog, candlelight.
    Pick the form/place/era that best matches THIS chunk's narration; between neighbouring scenes, deliberately change at least the setting or the form.
 S3. WHEN A PERSON JOINS AN OBJECT (optional, not required): keep the object as the focal anchor and let the person interact gently and rigidly only — holding, reaching, placing down, walking toward, examining. Follow S8's state-anchor and container tricks.
 S4. SENSITIVE/VIOLENT EVENTS → AFTERMATH WITH PEOPLE, NEVER GORE. Never depict weapons being aimed or fired, fighting, corpses, blood, wounds, graves, skulls, or people in terror. Tell such moments through a calm aftermath that still contains people doing ordinary actions: soldiers slowly patrolling an empty square at dawn, a woman picking up a fallen hat, villagers walking silently past shuttered houses, mourners placing flowers and candles. The frame must never be empty scenery alone.
@@ -623,16 +623,19 @@ const findBannedVisual = (text: string): string | null => {
 // 👉 NEO TRẠNG THÁI (tất định): vật thể có "biến đổi kinh điển" (chuối→bóc vỏ, trứng→đập,
 // chai→mở...) hễ bị tay cầm/nhấc là model tự khởi động biến đổi đó. Nếu prompt có cảnh
 // cầm nắm các vật này mà CHƯA có câu neo trạng thái → code tự nối thêm, không chờ AI nhớ.
-const HANDLED_OBJECT_RE = /\b(?:holds?|holding|lifts?|lifting|picks?\s+up|picking\s+up|carr(?:y|ies|ying)|grasps?|grips?|gripping|raises?|raising|reach(?:es|ing)?\s+for)\b[^.!?]{0,60}?\b(bananas?|oranges?|apples?|mango(?:es|s)?|coconuts?|eggs?|bottles?|jars?|loa(?:f|ves)|bread)\b/i;
+const HANDLED_OBJECT_RE = /\b(?:holds?|holding|lifts?|lifting|picks?\s+up|picking\s+up|carr(?:y|ies|ying)|grasps?|grips?|gripping|raises?|raising|reach(?:es|ing)?\s+for)\b[^.!?]{0,60}?\b(bananas?|oranges?|tangerines?|apples?|mango(?:es|s)?|peach(?:es)?|pears?|grapes?|watermelons?|pineapples?|coconuts?|corn|eggs?|bottles?|jars?|(?:tin|metal)\s+cans?|envelopes?|letters?|gifts?|presents?|packages?|parcels?|loa(?:f|ves)|bread)\b/i;
 const STATE_ANCHOR_RE = /\b(?:remains?|stays?|kept?)\b[^.!?]{0,40}\b(?:whole|intact|unpeeled|unopened|unchanged|sealed|closed)\b|\b(?:unpeeled|unopened|skin intact)\b/i;
 const buildStateAnchor = (text: string): string => {
   const m = text.match(HANDLED_OBJECT_RE);
   if (!m || STATE_ANCHOR_RE.test(text)) return '';
   const noun = m[1].toLowerCase();
   let state = 'completely whole and intact';                       // mặc định
-  if (/banana|orange|apple|mango|coconut/.test(noun)) state = 'completely whole, unpeeled and intact, skin unbroken';
+  if (/banana|orange|tangerine|mango/.test(noun)) state = 'completely whole, unpeeled and intact, skin unbroken';
+  else if (/apple|peach|pear|grape|watermelon|pineapple|coconut/.test(noun)) state = 'completely whole, uncut and intact, skin unbroken';
+  else if (/corn/.test(noun)) state = 'whole and unhusked';
   else if (/egg/.test(noun)) state = 'completely whole and uncracked';
-  else if (/bottle|jar/.test(noun)) state = 'sealed and unopened';
+  else if (/bottle|jar|can/.test(noun)) state = 'sealed and unopened';
+  else if (/envelope|letter|gift|present|package|parcel/.test(noun)) state = 'sealed, wrapped and unopened';
   else if (/loa|bread/.test(noun)) state = 'completely whole and uncut';
   return `The ${noun} remains ${state} for the entire shot — nothing peels, opens or splits.`;
 };
