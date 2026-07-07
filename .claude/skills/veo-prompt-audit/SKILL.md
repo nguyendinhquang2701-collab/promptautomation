@@ -17,7 +17,7 @@ You are auditing text-to-video prompts (usually Veo 3, 8-second scenes for histo
 ## A. ⛔ POLICY RISK (Veo will likely refuse, or the platform may flag the video)
 
 - **Real person names**: any real politician, celebrity, athlete, or real historical figure named directly (e.g. Ho Chi Minh, Trump, Che, Ed Whitman). Correct form is an approved codename (A Khan, A Lu, A Nam, Asen / A Chen, A Cua, A Bon / A Chi, Ba Mom, Ba Lac / May Kool, May Phuong, May Nu — numbered A Khan 1, A Lu 2... when exhausted) or a "the ..." epithet (the Silver-Bearded Statesman). Physical description of the person is fine; the name is not.
-- **Violence / gore**: weapons aimed or fired (aims a rifle, opens fire, machine gun pointed), corpses, dead bodies, blood, wounds, mass graves, skulls, massacre depicted, bombs falling, explosions over people, torture, execution, armed men in combat, "rifle at the ready".
+- **Violence / gore**: weapons aimed or fired (aims a rifle, opens fire, machine gun pointed), corpses, dead bodies, blood, wounds, mass graves, skulls, massacre depicted, bombs falling, explosions over people, torture, execution, armed men in combat, "rifle at the ready", bombers/warplanes/fighter jets overhead, air raids/airstrikes.
 - **Real brands / organizations** in the visual: company names (United Fruit, Chiquita...), CIA, terrorist orgs, logos, branded labels.
 - **Readable on-screen text**: headlines, typed words forming on paper, calendar pages showing dates, signs, labels like `labeled 'X'`. Veo renders text as garbage AND it wastes the shot.
 
@@ -35,8 +35,12 @@ You are auditing text-to-video prompts (usually Veo 3, 8-second scenes for histo
 7. **Camera violations**: more than ONE move per shot, or any of: orbit, crane, whip pan, handheld shake, fast tracking, zoom, drone, POV walking. Allowed: exactly one gentle slow move (push-in, pull-back, slow pan, gentle drift, slow tilt) or static.
 8. **Material contrast missing**: featured object same color/texture as the clothing/background touching it (pale banana against a cream knit sweater → peel inherits knit texture). Fix: state the contrast ("a yellow banana held against a dark blue apron").
 9. **Dense crowds**: "thousands of workers", "hundreds of people", "sea of faces", dense/packed/massive crowd in sharp focus, crowds with children. Max 3-5 clearly visible people; larger gatherings only as soft-focus background silhouettes.
+10. **Trigger noun "peel" in positive text**: the word "peel" as a noun ("its yellow peel catching the light") — even inside a negation — primes the model to start peeling. Fix: say "skin" instead. Same logic: prefer "shell stays sealed" phrasing over naming the opening action.
+11. **No stated quantity for the featured object**: "The banana" / "a banana" with no count often renders as two overlapping copies. Fix: "a single banana", "exactly one sealed envelope", "three green bottles".
+12. **Clock/watch faces with numerals**: any digital clock, or an analog face where numbers could be read — numerals render as garbage glyphs. Fix: "blank-faced analog clock", add "no numerals, no readable markings".
+13. **Anatomy negatives on person-less scenes**: "natural hands / consistent anatomy" wording in a scene with NO people invites the model to add hands. Fix: object-only scenes drop anatomy phrasing and instead forbid "human hands or body parts entering the frame".
 
-**Do NOT flag** (common false alarms): "banana slices" / "a plate of slices" (noun), "freshly harvested/cut" as adjective describing a finished result, "half-open door" (rigid rotation), "tears roll down her cheeks", "breaks into a smile", "heart pounding", "pounding rain", "picks up the crate", "presses on through the desert", "the dry ground", "sawdust", "carved statue".
+**Do NOT flag** (common false alarms): "banana slices" / "a plate of slices" (noun), "freshly harvested/cut" as adjective describing a finished result, "half-open door" (rigid rotation), "tears roll down her cheeks", "breaks into a smile", "heart pounding", "pounding rain", "picks up the crate", "presses on through the desert", "the dry ground", "sawdust", "carved statue", state-anchor sentences the app injects ("Exactly one banana in frame.", "The banana remains completely whole, unpeeled and intact, skin unbroken from the first frame to the last.", "Every clock face is plain and blank — no numerals..."), "blank-faced analog clock", "unpeeled"/"uncracked"/"unopened" adjectives, a vintage passenger airplane (civilian aviation is fine).
 
 ## C. 📺 WATCHABILITY (boring = viewers leave)
 
