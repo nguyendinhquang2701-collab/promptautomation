@@ -539,6 +539,11 @@ S7. EXPLICIT ETHNICITY & ERA FOR EVERY PERSON (target audience: American viewers
    a) If the narration states or implies the person's nationality/ethnicity (Colombian workers, Guatemalan president, Arab traders...) → use exactly that.
    b) Else if the scene's location/era clearly belongs to a specific country or culture (a highland village in New Guinea, a Caribbean port, a Colombian plantation...) → use people native to that place and time.
    c) Otherwise → DEFAULT to a white American person, styled correctly for the era: modern-day scenes get contemporary American looks (e.g. "a white American woman in her 30s, casual modern clothes"); historical American scenes get period-accurate dress (e.g. "a white American man in 1950s attire").
+S8. NO TRANSFORMATION MOMENTS. Video models CANNOT make an object change form mid-shot — they duplicate the object instead (the bunch stays on the tree AND appears in the hand). This applies to EVERY object and material: fruit, crops, wood, stone, cloth, rope, food, tools. NEVER depict the instant of cutting, chopping, slicing, peeling, splitting, breaking, cracking, grinding, crushing, pounding, reaping, felling, carving, sawing, tearing, squeezing. Choose the moment BEFORE or AFTER:
+   - BEFORE (anticipation, no contact yet): the worker raises a machete toward the banana stem / the woodcutter rests his axe on his shoulder beside the tall tree / the cook places a whole fish on the board, knife resting beside it.
+   - AFTER (result already done): the worker carries a freshly harvested banana bunch away — tree OUT of frame / split firewood lies stacked as the man wipes his brow / a farmer carries bundles of harvested rice stalks across the field / a bowl of ground spices sits beside the stone mortar.
+   - ONE-INSTANCE RULE: the featured object exists in exactly ONE place in the frame. If it is in someone's hands, its source (tree, pile, plant) must be OUT of frame and NOT mentioned — describing both invites the model to draw the object twice.
+   - Allowed object interactions are RIGID-BODY ONLY: carry, lift, hold, place down, stack, load, turn over, push a cart — the object moves but never changes shape.
 === END VISUAL STORYTELLING RULE ===`;
 
 // 👉 TỪ KHÓA CẤM trong nội dung cảnh/prompt (giấy tờ, chữ đọc được, bạo lực, đám đông
@@ -581,6 +586,17 @@ const BANNED_VISUALS: { re: RegExp; label: string }[] = [
   { re: /\bwounded\b/i, label: 'wounded' },
   { re: /\barmed\s+(?:men|group|fighters|exiles|force)\b/i, label: 'armed men' },
   { re: /\b(?:rifles?|guns?|weapons?)\s+at the ready\b/i, label: 'weapon at the ready' },
+  // Hành động BIẾN ĐỔI vật thể (model không cắt/tách/bóc/nghiền/gặt... được — sẽ nhân
+  // bản vật thể). Chỉ bắt dạng ĐỘNG TỪ chủ động (verb + the/a/an/off/open/down...) —
+  // danh từ "banana slices", quá khứ phân từ "freshly harvested", "half-peeled" vẫn hợp lệ.
+  { re: /\b(?:cuts?|cutting|chops?|chopping|slices?|slicing|severs?|severing|peels?|peeling|splits?|splitting|tears?|tearing|snaps?|snapping|carves?|carving|saws?|sawing|rips?|ripping|shreds?|shredding|grates?|grating|grinds?|grinding|crushes|crushing|smashes|smashing|shatters?|shattering|squeezes|squeezing|kneads?|kneading|threshes|threshing|reaps?|reaping|mows?|mowing|fells?|felling|husks?|husking|shucks?|shucking)\s+(?:the|a|an|off|open|through|into|apart|down)\b/i, label: 'object transformation' },
+  { re: /\b(?:peeled|sliced|chopped|severed|snapped|crushed|smashed|shattered|ground)\s+(?:the|a|an)\b/i, label: 'object transformation' },
+  { re: /\bbreak(?:s|ing)?\s+(?:open|apart|off|in half|in two)\b/i, label: 'breaking object' },
+  { re: /\bcrack(?:s|ing)?\s+open\b|\bcracks?\s+(?:the|an?)\s+(?:eggs?|nuts?|coconuts?|shells?)\b/i, label: 'cracking object' },
+  { re: /\bpound(?:s|ing)?\s+(?:the|a|an)\b/i, label: 'pounding object' },
+  { re: /\bpress(?:es|ing)?\s+(?:the\s+)?(?:juice|oil|grapes?|sugarcane|cane|olives?)\b/i, label: 'pressing juice' },
+  { re: /\bpluck(?:s|ing|ed)?\b/i, label: 'plucking' },
+  { re: /\bpick(?:s|ing)?\s+(?!up\b)(?:a|an|the)\b/i, label: 'picking off (detach)' },
   // Đám đông dày đặc
   { re: /\b(?:thousands|hundreds) of (?:people|workers|men|women|strikers|protesters)\b/i, label: 'mass crowd' },
   { re: /\bsea of faces\b/i, label: 'sea of faces' },
@@ -915,7 +931,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7).
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
@@ -1007,7 +1023,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7).
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: depict PEOPLE doing the activity the chunk describes, in its real place and era; NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
@@ -1095,7 +1111,7 @@ ${ANTI_ARTIFACT_RULE}
 Apply the ANTI-ARTIFACT RULE to every field: keep framing Medium/Wide, give each person one simple stable action, keep the camera locked, and lean on environmental motion. Being artifact-free outranks looking cinematic.
 
 ${STORYTELLING_RULE}
-Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': the viewer must see PEOPLE living the story — never paperwork/maps/text props, never an empty frame, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7).
+Apply the VISUAL STORYTELLING RULE to 'narrative' and 'setting': the viewer must see PEOPLE living the story — never paperwork/maps/text props, never an empty frame, never gore (calm aftermath with people instead), never more than 3-5 people in sharp focus. EVERY person in 'narrative' and 'expression' carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7). NEVER depict the instant an object changes form — choose BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
@@ -1166,7 +1182,7 @@ DENSITY: narrative preserves every VERBATIM_BLOCK in full, but otherwise stays l
 
   // 👉 Cue KHẲNG ĐỊNH (consistent anatomy...) đặt trước, rồi mới tới danh sách phủ định
   // NGẮN & CỤ THỂ nhắm đúng lỗi hay gặp — theo đúng cách VEO 3 phản hồi tốt nhất.
-  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, oversaturated colors, plastic skin, readable text, watermark, caption, maps, documents, newspapers, calendar pages, dense crowds.";
+  const NEGATIVE_TAIL = "Consistent anatomy, natural hand pose, stable proportions, steady motion. Avoid: extra limbs, extra fingers, deformed or fused hands, face warping, morphing, flicker, jitter, duplicated people, duplicated objects, objects splitting or morphing, oversaturated colors, plastic skin, readable text, watermark, caption, maps, documents, newspapers, calendar pages, dense crowds.";
 
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
