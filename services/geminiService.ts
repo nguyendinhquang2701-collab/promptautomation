@@ -91,6 +91,16 @@ const keepObjectWhole = (action: string): string => {
   return `${action.trim()} ${clause}`;
 };
 
+// 👉 Chốt chặn chính sách (tất định): mô tả nhân vật KHÔNG được chứa chức danh/vai trò
+// (president, general, minister...) vì chính nó định danh người thật (vd "president of
+// Guatemala" = Árbenz). Cắt bỏ mọi đoạn (ngăn bởi dấu phẩy) có chứa từ chức danh, giữ lại
+// các đoạn ngoại hình thuần. Danh sách gọn, nhắm đúng chức danh chính trị/lãnh đạo.
+const TITLE_WORD_RE = /\b(?:president|vice[- ]?president|king|queen|emperor|empress|prince|princess|monarch|dictator|general|colonel|admiral|marshal|minister|chancellor|senator|congress(?:man|woman)|governor|mayor|ambassador|ceo|chairman|chairwoman|head of state|leader|democratically elected|ruler|commander|pope|sultan|shah|tsar|czar|pharaoh|prime minister|secretary of state)\b/i;
+const stripIdentityTitles = (desc: string): string => {
+  if (!desc) return desc;
+  return desc.split(',').map(s => s.trim()).filter(seg => seg && !TITLE_WORD_RE.test(seg)).join(', ');
+};
+
 const getColorDescription = (style: ColorStyle): string => {
   switch (style) {
     case 'cinematic': return "HDR, deep shadows, balanced highlights, pro color grading, realistic textures";
@@ -1151,19 +1161,27 @@ export const extractContextAndCharacters = async (rawScript: string): Promise<{ 
 ${CELEBRITY_SAFETY_RULE}
 
 CRITICAL RULES:
-1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put a CODENAME here chosen from the APPROVED LIST in the REAL-PERSON NAME SAFETY section, matched to the person's gender and age — NEVER another human-sounding name (any invented personal name can accidentally match a different real person). Capture the person's recognizable look in "visualDescription".
+1. Put the character's name into the "promptName" field. If the character is an ORIGINAL fictional character, copy the EXACT original name from the script (do NOT over-censor ordinary fictional names). If the character is (or is named after) a REAL public figure, put a CODENAME here chosen from the APPROVED LIST in the REAL-PERSON NAME SAFETY section, matched to the person's gender and age — NEVER another human-sounding name (any invented personal name can accidentally match a different real person). Capture ONLY the person's physical look (face, build, clothing) in "visualDescription" — never their office, title, or achievements.
 1b. Put into "originalName" the exact name/reference EXACTLY as it literally appears in the script (for a real public figure, this is their REAL name). This field is used ONLY internally to find-and-replace that reference; it will never be shown. If the script gives no explicit name, leave it EMPTY "".
 1c. Set "isRealPerson" to true if the character is (or is named after / clearly depicts) a REAL public figure or real historical person; set false for purely fictional/original characters.
 2. Put a safe, generic role alias in the "name" field (e.g., "The Protagonist", "The Horse", "The Villain").
 3. ZERO-HALLUCINATION (CRITICAL): Extract ONLY physical traits explicitly mentioned or strongly implied in the script. DO NOT invent details like hair color or age if they are missing from the text.
-4. "visualDescription" MUST follow this exact formula if details exist: "[Age/Gender/Species], [Body Type/Build], [Hair/Coat/Skin], [Key Features]". Keep it as a concise comma-separated list. If completely undefined, leave it EMPTY "".
+4. "visualDescription" describes ONLY physical APPEARANCE, as a concise comma-separated list following this framework in order (skip any part the script doesn't give):
+   1) FACE: age range + gender + facial features + hair + skin (e.g. "middle-aged man, square jaw, short greying hair, tanned skin").
+   2) BUILD: height / body build (e.g. "medium height, sturdy build").
+   3) CLOTHING: garment type + color (e.g. "charcoal double-breasted suit, white shirt").
+   ABSOLUTELY FORBIDDEN here (this field must NOT identify a real person): any personal name; any role, title, office, rank, or occupation used as identity (president, king, general, minister, senator, CEO, "democratically elected", "leader of ...", "president of Guatemala"); any country or organization named as a title; any famous event, position, or achievement. PHYSICAL LOOK ONLY. If the script gives no physical detail at all, leave it EMPTY "" — do NOT fall back to describing their job.
 5. For "ethnicity": extract from the script if stated; else INFER from the character's story context (nationality/location/era — e.g. a Guatemalan president → "Guatemalan"); if the story gives NO such context at all, default to "white American" (the videos target American viewers). For "clothing": extract strictly from the script; if not mentioned, leave EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
-      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
+      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING, description: "Physical appearance ONLY, comma-separated: FACE (age, gender, facial features, hair, skin), then BUILD (height/build), then CLOTHING (type + color). NEVER a name, title, office, rank, occupation, country-as-title, or achievement (no 'president', 'general', 'president of Guatemala', 'democratically elected'). Empty \"\" if no physical detail." } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
       0.4, limitSceneConcurrency);
     updateUsageStats({ scripts: 1 });
 
-    const rawChars: CharacterIdentity[] = (result.characters || []).map((c: any, index: number) => ({ id: `char-${index}-${Date.now()}`, ...c }));
+    const rawChars: CharacterIdentity[] = (result.characters || []).map((c: any, index: number) => ({
+      id: `char-${index}-${Date.now()}`, ...c,
+      // Lưới chặn cứng: bỏ chức danh/vai trò khỏi mô tả (chống lộ danh tính người thật).
+      visualDescription: stripIdentityTitles(c.visualDescription || '')
+    }));
     // 👉 CƯỠNG CHẾ MÃ DANH cho NGƯỜI THẬT (isRealPerson=true): mọi tên người tự bịa đều
     // CÓ THỂ vô tình trùng một người nổi tiếng khác. Chỉ chấp nhận: (a) mã danh trong
     // BỘ ĐƯỢC DUYỆT (CODENAMES), hoặc (b) danh xưng dạng "the ...". Ngoài ra → code tự
