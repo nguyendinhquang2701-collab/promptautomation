@@ -1566,7 +1566,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
       action: clean(p.action),
       style,
     };
-    return JSON.stringify(obj, null, 2);
+    return JSON.stringify(obj);   // 1 prompt = 1 dòng (JSON gọn, không xuống dòng)
   };
 
   const executeWithProvider = async (providerId: string): Promise<PromptItem[]> => {
