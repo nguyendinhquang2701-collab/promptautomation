@@ -82,6 +82,14 @@ const stripIdentityTitles = (desc: string): string => {
   return desc.split(',').map(s => s.trim()).filter(seg => seg && !TITLE_WORD_RE.test(seg)).join(', ');
 };
 
+// 👉 KHÔNG BAO GIỜ CÓ NGƯỜI DẪN CHUYỆN TRÊN HÌNH: narrator/host/presenter là người
+// hiện đại, hay bị nhét vào cả cảnh cổ đại → phá mạch. Loại hẳn khỏi danh bạ nhân vật
+// (narration chỉ là giọng off-screen). Video luôn liền mạch trong thế giới của câu chuyện.
+// Khớp trên chuỗi ĐÃ FOLD (bỏ dấu, thường hoá) để bắt cả "Người dẫn chuyện" có dấu.
+const NARRATOR_RE = /\b(?:narrator|narration|host|hostess|presenter|storyteller|story-teller|voice[- ]?over|voiceover|announcer|commentator|moderator|emcee)\b|nguoi dan|dan chuyen|dan truyen|thuyet minh|nguoi ke|nguoi thuyet/i;
+const isNarratorCharacter = (c: CharacterIdentity): boolean =>
+  NARRATOR_RE.test(foldText(`${c.name || ''} ${c.promptName || ''} ${c.originalName || ''}`));
+
 // 👉 BẢO ĐẢM 100% CÓ NGOẠI HÌNH (tất định): nếu AI vẫn để trống (hoặc bị strip sạch),
 // code tự dựng mô tả CHUNG theo framework Mặt/Vóc dáng/Trang phục để đồng bộ nhân vật.
 const APPEARANCE_JUNK = new Set(['', 'n/a', 'none', 'unspecified', 'not specified', 'unknown', 'khong', 'null', 'undefined', '""']);
@@ -1037,7 +1045,7 @@ RULES:
    The 'form' and 'place' you output are the primary anti-repeat keys, but let this whole checklist drive your choices of era, shot and person_action too.
 3. ALREADY-USED COMPOSITIONS (from earlier parts of this video — do NOT reuse any of these form+place pairings):
 ${recentLabels.length ? recentLabels.map(l => `   - ${l}`).join('\n') : '   (none yet)'}
-4. PEOPLE ARE OPTIONAL: use 'none' freely for object/place scenes — but a scene listing REQUIRED_CHARACTERS must feature exactly those characters (never 'none'). When a person appears, give them ONE continuous whole-body action (carrying, walking, loading, rowing...), never posing.
+4. PEOPLE ARE OPTIONAL: use 'none' freely for object/place scenes — but a scene listing REQUIRED_CHARACTERS must feature exactly those characters (never 'none'). When a person appears, give them ONE continuous whole-body action (carrying, walking, loading, rowing...), never posing. Any person MUST belong to THIS scene's own era and place (period-accurate dress and setting) — NEVER a narrator, host, presenter, or modern person dropped into a historical scene, and never someone addressing the camera.
 5. ERA CONSISTENCY: stay inside the era implied by the scene text / context below. Vary light and sub-period, not the century.
 6. SHOT: vary the shot size across scenes (establishing wide, wide, medium-wide, medium, and — for OBJECTS or still details only — close or extreme close-up). Keep PEOPLE at medium/wide (never a tight close-up on moving hands or faces). One gentle camera move max (static / slow push-in / slow pull-back / slow pan / gentle drift).
 
@@ -1180,6 +1188,7 @@ CRITICAL RULES:
 1b. Put into "originalName" the exact name/reference EXACTLY as it literally appears in the script (for a real public figure, this is their REAL name). This field is used ONLY internally to find-and-replace that reference; it will never be shown. If the script gives no explicit name, leave it EMPTY "".
 1c. Set "isRealPerson" to true if the character is (or is named after / clearly depicts) a REAL public figure or real historical person; set false for purely fictional/original characters.
 2. Put a safe, generic role alias in the "name" field (e.g., "The Protagonist", "The Horse", "The Villain").
+2b. NO NARRATOR / HOST / PRESENTER: do NOT extract a narrator, host, presenter, storyteller, voice-over, or any modern framing person as a character. Narration is off-screen audio only and NEVER appears on screen. Only extract characters that actually exist inside the story's own world and era.
 3. ALWAYS FILL IN APPEARANCE (critical for cross-scene character CONSISTENCY — the same person must be redrawable every scene): every human or animal character MUST receive a complete visualDescription. If the script states physical traits, use them exactly. If the script does NOT describe the look (this is the common case for narration), INVENT a plausible, ordinary appearance that fits the character's gender, age, ethnicity and era. Keep invented looks generic and non-distinctive; for a real public figure give a generic era-appropriate look — NEVER copy their real, recognizable signature features. NEVER leave the field empty for an on-screen character.
 4. "visualDescription" is physical APPEARANCE ONLY, a concise comma-separated list that FILLS ALL THREE parts of this framework in order (invent ordinary, era-appropriate details for any part the script leaves unstated — do not skip parts):
    1) FACE: age range + gender + facial features + hair + skin (e.g. "middle-aged man, square jaw, short greying hair, tanned skin").
@@ -1192,11 +1201,14 @@ Output strictly valid JSON.`,
       0.4, limitSceneConcurrency);
     updateUsageStats({ scripts: 1 });
 
-    const rawChars: CharacterIdentity[] = (result.characters || []).map((c: any, index: number) => ({
-      id: `char-${index}-${Date.now()}`, ...c,
-      // Lưới chặn cứng: bỏ chức danh/vai trò khỏi mô tả (chống lộ danh tính người thật).
-      visualDescription: stripIdentityTitles(c.visualDescription || '')
-    }));
+    const rawChars: CharacterIdentity[] = (result.characters || [])
+      .map((c: any, index: number) => ({
+        id: `char-${index}-${Date.now()}`, ...c,
+        // Lưới chặn cứng: bỏ chức danh/vai trò khỏi mô tả (chống lộ danh tính người thật).
+        visualDescription: stripIdentityTitles(c.visualDescription || '')
+      }))
+      // 👉 Loại hẳn nhân vật dẫn chuyện/host — không bao giờ lên hình.
+      .filter((c: CharacterIdentity) => !isNarratorCharacter(c));
     // 👉 CƯỠNG CHẾ MÃ DANH cho NGƯỜI THẬT (isRealPerson=true): mọi tên người tự bịa đều
     // CÓ THỂ vô tình trùng một người nổi tiếng khác. Chỉ chấp nhận: (a) mã danh trong
     // BỘ ĐƯỢC DUYỆT (CODENAMES), hoặc (b) danh xưng dạng "the ...". Ngoài ra → code tự
@@ -1488,6 +1500,8 @@ FIELD GUIDE:
 - _subjects: comma-separated CANONICAL_NAMEs present (internal).
 
 ONE SCENE PER PROMPT (critical): each prompt is a SINGLE continuous moment — ONE place, ONE time, ONE action. Never change location, never jump in time, never chain actions ("then..."), never a montage or split screen. If the input text implies several moments, pick the single most visual one and silently drop the rest.
+
+NEVER A NARRATOR ON SCREEN (critical): there is NO narrator, host, presenter, or modern framing person in any shot. Narration is off-screen voice-over only. Every scene lives ENTIRELY inside the story's own world and era — show only period-appropriate people, places and objects for that scene's time. NEVER put a modern-day person (or a person looking at the camera / addressing the viewer) into a historical scene. If a scene's text is pure narration with no character, illustrate its MEANING with era-appropriate people or objects doing something in that world — never a presenter talking to camera.
 
 NO ERRORS (this is the #1 priority — a clean simple shot always beats a fancy one):
 - ONE continuous whole-body action at a calm pace (walking, carrying, rowing, sweeping, loading, planting, speaking calmly, watching). No fast, intricate, or fiddly motion; no fine finger work in close-up.
