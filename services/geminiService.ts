@@ -25,7 +25,7 @@ export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
   'gpt-4o': { id: 'gpt-4o', name: 'ChatGPT 4o', type: 'openai-compatible', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', keyPrefix: 'openai', group: 'OpenAI' },
   'gpt-4o-mini': { id: 'gpt-4o-mini', name: 'ChatGPT 4o Mini', type: 'openai-compatible', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1', keyPrefix: 'openai', group: 'OpenAI' },
   gemini: { id: 'gemini', name: 'Gemini 2.5 Flash', type: 'gemini', model: 'gemini-2.5-flash', keyPrefix: 'gemini', group: 'Google' },
-  deepseek: { id: 'deepseek', name: 'Deepseek V3', type: 'openai-compatible', model: 'deepseek-chat', baseUrl: 'https://api.deepseek.com', keyPrefix: 'deepseek', group: 'Deepseek' },
+  deepseek: { id: 'deepseek', name: 'Deepseek V4', type: 'openai-compatible', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', keyPrefix: 'deepseek', group: 'Deepseek' },
   grok: { id: 'grok', name: 'Grok 4.1', type: 'openai-compatible', model: 'grok-4-1-fast-reasoning', baseUrl: 'https://api.x.ai/v1', keyPrefix: 'grok', group: 'xAI' },
   mistral: { id: 'mistral', name: 'Mistral Large', type: 'openai-compatible', model: 'mistral-large-latest', baseUrl: 'https://api.mistral.ai/v1', keyPrefix: 'mistral', group: 'Mistral' }
 };
