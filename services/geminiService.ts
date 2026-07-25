@@ -40,7 +40,17 @@ export const loadAIProviders = () => {
     try {
         const customStr = localStorage.getItem('app1_custom_providers');
         if (customStr) {
-            const customArr = JSON.parse(customStr);
+            let customArr = JSON.parse(customStr);
+            // 👉 MIGRATION: DeepSeek khai tử deepseek-chat/deepseek-reasoner (2026/07/24).
+            // Config cũ lưu trong trình duyệt sẽ khiến API đứng → tự nâng lên model V4 và
+            // lưu lại, để người dùng chạy được ngay mà không phải sửa tay.
+            let migrated = false;
+            customArr = customArr.map((p: ProviderConfig) => {
+                if (p.model === 'deepseek-chat') { migrated = true; return { ...p, model: 'deepseek-v4-flash', name: /v3/i.test(p.name || '') ? 'Deepseek V4' : p.name }; }
+                if (p.model === 'deepseek-reasoner') { migrated = true; return { ...p, model: 'deepseek-v4-pro' }; }
+                return p;
+            });
+            if (migrated) localStorage.setItem('app1_custom_providers', JSON.stringify(customArr));
             customArr.forEach((p: ProviderConfig) => {
                 AI_PROVIDERS[p.id] = p;
             });
