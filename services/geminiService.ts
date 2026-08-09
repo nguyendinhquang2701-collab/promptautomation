@@ -319,6 +319,11 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
     // (Sửa hiệu năng) TIMEOUT 90s: fetch không có timeout mặc định → 1 request treo có thể
     // kẹt cả kịch bản. AbortController cắt sau 90s để vòng retry xử lý. max_tokens chặn model
     // sinh phản hồi dài lê thê (nguồn chậm với provider OpenAI-compatible).
+    // 👉 DEEPSEEK V4: model deepseek-v4-flash MẶC ĐỊNH BẬT thinking mode (deepseek-chat cũ
+    // là chế độ non-thinking). Thinking ngốn token suy nghĩ trước khi ra JSON → output lớn
+    // (Bước 2/3) bị cụt/rỗng ("mạng hụt") và cực chậm. Tắt bằng thinking:{type:"disabled"}
+    // (KHÔNG dùng reasoning_effort:"none" — DeepSeek trả 400). Chỉ gửi cho host DeepSeek.
+    const isDeepSeekHost = /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 90000);
     let response: Response;
@@ -333,7 +338,8 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
           model: providerConfig.model,
           messages: messages,
           temperature: temperature,
-          max_tokens: 8192
+          max_tokens: 8192,
+          ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {})
         }),
         signal: controller.signal
       });
