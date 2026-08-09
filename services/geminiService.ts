@@ -69,7 +69,10 @@ export const loadAIProviders = () => {
 
 loadAIProviders();
 
-const CONFIG = { SCENE_CONCURRENCY: 3, PROMPT_CONCURRENCY: 5, MAX_RETRIES: 3, BATCH_SIZE: 10 };
+// SCENE/PROMPT_CONCURRENCY: số call chạy song song (gói paid). BATCH_SIZE/PROMPT_BATCH_SIZE
+// càng lớn → càng ÍT round-trip (mỗi call gói nhiều cảnh hơn, vẫn dưới trần 8192 token out).
+// Lưới an toàn (scrub tên/film/banned) vẫn chạy theo TỪNG cảnh nên không bị ảnh hưởng.
+const CONFIG = { SCENE_CONCURRENCY: 5, PROMPT_CONCURRENCY: 8, MAX_RETRIES: 3, BATCH_SIZE: 15 };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // 👉 Veo hiểu các từ "phim nhựa" (film grain, shot on 35mm film, archival film...) theo
@@ -231,17 +234,19 @@ const callGeminiSafe = async <T>(contents: any, systemInstruction: string | unde
     return JSON.parse(sanitizeJSONString(response.text || "[]")) as T;
   };
   let initialKeysLen = Math.max(1, JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]').length);
-  let maxRetries = Math.max(CONFIG.MAX_RETRIES, initialKeysLen * 3);
+  // (Sửa hiệu năng) CHẶN TRẦN retry: trước đây = keys×3 (nhiều key → vòng retry phình bệnh
+  // lý, cộng dồn delay tới nhiều phút). Nay tối đa 8, vẫn đủ xoay hết vòng key.
+  let maxRetries = Math.min(Math.max(CONFIG.MAX_RETRIES, initialKeysLen + 2), 8);
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try { return await limiter(executeCall); } 
+    try { return await limiter(executeCall); }
     catch(error: any) {
       const status = error?.status || error?.code;
       if (status === 429) {
          const currentKeys = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
-         if (currentKeys.length > 1) { keyIndexes[providerConfig.id] = (keyIndexes[providerConfig.id] + 1) % currentKeys.length; await delay(1000); continue; } 
-         else { if (attempt >= maxRetries) throw new Error(`LỖI 429: Key ${providerConfig.name} cạn Hạn ngạch.`); await delay(Math.min(2000 * Math.pow(2, attempt - 1), 15000)); continue; }
+         if (currentKeys.length > 1) { keyIndexes[providerConfig.id] = (keyIndexes[providerConfig.id] + 1) % currentKeys.length; await delay(600 + Math.random() * 500); continue; }
+         else { if (attempt >= maxRetries) throw new Error(`LỖI 429: Key ${providerConfig.name} cạn Hạn ngạch.`); await delay(Math.min(2000 * Math.pow(2, attempt - 1), 15000) + Math.random() * 500); continue; }
       }
-      if ((status === 503 || status === 500) && attempt < maxRetries) { await delay(3000); continue; }
+      if ((status === 503 || status === 500) && attempt < maxRetries) { await delay(2000 + Math.random() * 1000); continue; }
       throw error;
     }
   }
@@ -305,19 +310,31 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
     const cleanBaseUrl = (providerConfig.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
     const targetUrl = `${cleanBaseUrl}/chat/completions`;
     
-    const response = await fetch(targetUrl, { 
-      method: 'POST', 
-      headers: { 
-        'Content-Type': 'application/json', 
-        'Authorization': `Bearer ${currentApiKey}` 
-      }, 
-      body: JSON.stringify({ 
-        model: providerConfig.model, 
-        messages: messages, 
-        temperature: temperature
-      }) 
-    });
-    
+    // (Sửa hiệu năng) TIMEOUT 90s: fetch không có timeout mặc định → 1 request treo có thể
+    // kẹt cả kịch bản. AbortController cắt sau 90s để vòng retry xử lý. max_tokens chặn model
+    // sinh phản hồi dài lê thê (nguồn chậm với provider OpenAI-compatible).
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000);
+    let response: Response;
+    try {
+      response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentApiKey}`
+        },
+        body: JSON.stringify({
+          model: providerConfig.model,
+          messages: messages,
+          temperature: temperature,
+          max_tokens: 8192
+        }),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
     if (!response.ok) {
         const textBody = await response.text(); 
         let errStr = textBody;
@@ -341,22 +358,28 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
   };
   
   const initialKeysLen = Math.max(1, JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]').length);
-  const maxRetries = Math.max(CONFIG.MAX_RETRIES, initialKeysLen * 3);
-  
+  // (Sửa hiệu năng) Chặn trần retry (không phình theo số key) — xem chú thích ở callGeminiSafe.
+  const maxRetries = Math.min(Math.max(CONFIG.MAX_RETRIES, initialKeysLen + 2), 8);
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try { return await limiter(executeCall); } 
+    try { return await limiter(executeCall); }
     catch(error: any) {
+      // Request bị cắt do timeout 90s → thử lại (nếu còn lượt) thay vì kẹt.
+      if (error?.name === 'AbortError') {
+          if (attempt < maxRetries) { await delay(500 + Math.random() * 700); continue; }
+          throw new Error(`API ${providerConfig.name} phản hồi quá lâu (timeout 90s).`);
+      }
       if (error instanceof TypeError && error.message === 'Failed to fetch') {
           throw new Error(`Bị TRÌNH DUYỆT chặn kết nối (Lỗi CORS). Hãy kiểm tra lại link API hoặc bật tiện ích Allow CORS trên trình duyệt.`);
       }
 
       const status = error?.status || error?.response?.status;
-      if (status === 429 || status === 402) { 
+      if (status === 429 || status === 402) {
          const currentKeys = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
-         if (currentKeys.length > 1) { keyIndexes[providerConfig.id] = (keyIndexes[providerConfig.id] + 1) % currentKeys.length; await delay(1000); continue; } 
-         else { if (attempt >= maxRetries) throw new Error(`LỖI 429/402: Key ${providerConfig.name} cạn Hạn ngạch.`); await delay(Math.min(2000 * Math.pow(2, attempt - 1), 15000)); continue; }
+         if (currentKeys.length > 1) { keyIndexes[providerConfig.id] = (keyIndexes[providerConfig.id] + 1) % currentKeys.length; await delay(600 + Math.random() * 500); continue; }
+         else { if (attempt >= maxRetries) throw new Error(`LỖI 429/402: Key ${providerConfig.name} cạn Hạn ngạch.`); await delay(Math.min(2000 * Math.pow(2, attempt - 1), 15000) + Math.random() * 500); continue; }
       }
-      if ((status === 503 || status === 500 || status === 502) && attempt < maxRetries) { await delay(3000); continue; }
+      if ((status === 503 || status === 500 || status === 502) && attempt < maxRetries) { await delay(2000 + Math.random() * 1000); continue; }
       
       if (error?.details) {
           throw new Error(`Server từ chối (HTTP ${status}): ${error.details}`);
@@ -1031,8 +1054,6 @@ const ledgerPush = (k: string, label: string) => {
   ledgerKeys.push(k); ledgerLabels.push(label);
   while (ledgerKeys.length > LEDGER_MAX) { ledgerKeys.shift(); ledgerLabels.shift(); }
 };
-// Các phân đoạn chạy SONG SONG (gói paid) vẫn phải đọc/ghi sổ nối tiếp nhau.
-let plannerChain: Promise<unknown> = Promise.resolve();
 
 const PLANNER_BATCH = 40;
 const buildPlannerInstruction = (globalContext: string, recentLabels: string[]): string => `You are the ART DIRECTOR planning compositions for a sequence of 8-second historical B-roll shots, BEFORE the prompt writers start. Your ONLY job: make every scene visually DIFFERENT while still illustrating its text.
@@ -1128,47 +1149,6 @@ const planVisualsForScenes = async (
   }
   return plans;
 };
-
-// ============================================================================
-// 👉 BƯỚC 3.5 — AUDIT PASS (chốt kiểm cuối trong app, nhúng checklist của skill
-// veo-prompt-audit). Mỗi mẻ prompt đã lắp ráp xong được 1 lần soi lại bằng AI:
-// chỉ chấm "severe" cho lỗi chắc chắn fail/bị chặn, kèm bản viết lại phần nội
-// dung. Bản viết lại PHẢI vượt qua đủ lưới tất định (scrub tên, banned visuals,
-// đủ tên nhân vật, trần từ) — không đạt thì GIỮ BẢN GỐC, không bao giờ tệ đi.
-// ============================================================================
-const AUDIT_SCHEMA = {
-  type: Type.ARRAY,
-  items: {
-    type: Type.OBJECT,
-    properties: {
-      sceneId: { type: Type.INTEGER },
-      severity: { type: Type.STRING, enum: ['ok', 'severe'], description: "'severe' ONLY for guaranteed policy-block or render-fail; everything else is 'ok'." },
-      problem: { type: Type.STRING, description: "Quote the exact offending phrase (empty if ok)." },
-      fixedContent: { type: Type.STRING, description: "For 'severe' only: full rewritten CONTENT (see rules). Empty string if ok." }
-    },
-    required: ['sceneId', 'severity']
-  }
-};
-const AUDIT_INSTRUCTION = `You are a strict PRE-RENDER AUDITOR for Veo 3 video prompts (8-second historical B-roll). For each input prompt, decide severity:
-
-"severe" — the render WILL be refused or WILL break. Only these count:
-- A real public figure's name written directly.
-- Violence/gore on screen: weapon aimed or fired, corpse, dead body, blood, wound, explosion, bombs falling, torture, execution, massacre, warplanes/bombers overhead.
-- Paperwork or readable text AS THE SUBJECT: map, document, newspaper, headline, typewriter, ledger, calendar, sign or label meant to be read.
-- A transformation moment: the instant an object changes form (cutting, chopping, peeling, splitting, cracking, grinding, crushing, plucking, reaping...).
-- A partial/hybrid object state: half-peeled, half-cut, half-eaten, partially unwrapped.
-- The featured object shown BOTH at its source AND in someone's hands in the same frame.
-- Dense crowd in sharp focus: hundreds/thousands, "sea of faces", packed masses.
-- Camera: more than ONE move, or any orbit / crane / whip pan / handheld shake / zoom / drone / POV walking.
-- Extreme close-up of hands doing fine, intricate work.
-
-"ok" — everything else. Do NOT flag (common false alarms): "banana slices" / "a plate of slices" (noun result), "freshly harvested/cut" as adjective, "half-open door", "tears roll down her cheeks", "breaks into a smile", "picks up the crate", "pounding rain", environmental motion, the trailing negative list ("Avoid: ...") if present, mild stillness, object-only scenes.
-
-For every "severe", also write "fixedContent": a rewrite of the WHOLE content you received (the negative tail was already stripped from your input — do NOT add one back). Rules for the rewrite:
-- Keep the scene's story meaning, era, place and characters. Copy each character's parenthesized description block VERBATIM.
-- Keep the field labels present in the original (Expression: / Setting: / Lighting: / Camera:) and keep the sentence starting "Rendered in the style of" unchanged at the end.
-- Change ONLY what fixes the violation: violence → calm AFTERMATH that still contains people doing ordinary actions; paperwork/text → people doing the described activity in the described place; transformation moment → the moment BEFORE (tool raised, no contact) or AFTER (result fully done, source out of frame); partial state → fully intact or fully processed; crowd → 3-5 people in sharp focus, rest as soft-focus silhouettes; camera → ONE gentle slow move or static.
-Output strictly valid JSON for EVERY input sceneId.`;
 
 // Chỉ thị ràng buộc bơm vào payload từng cảnh của Bước 3.
 const planToDirective = (p: VisualPlan | undefined, hasRequiredChars: boolean): string => {
@@ -1301,7 +1281,7 @@ export const analyzeSingleSegmentToScenes = async (segment: { id: string; conten
     let pendingIndices = batchTexts.map((_, i) => i);
     let loopCount = 0;
 
-    while (pendingIndices.length > 0 && loopCount < 3) {
+    while (pendingIndices.length > 0 && loopCount < 2) {   // (Sửa hiệu năng) 3→2 vòng
       loopCount++;
       const promptTexts = pendingIndices.map(i => `[ID: ${i + 1}] "${batchTexts[i]}"`).join('\n');
       
@@ -1346,7 +1326,7 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
             // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ/bạo lực/đám đông) — dính thì tạo lại,
             // trừ vòng cuối (chấp nhận để không kẹt cả đoạn).
             const bannedHit = findBannedVisual(`${validScenes[idx].visualDescription} ${validScenes[idx].settingTime}`);
-            if (validScenes[idx].visualDescription !== "" && (!bannedHit || loopCount >= 3)) {
+            if (validScenes[idx].visualDescription !== "" && (!bannedHit || loopCount >= 2)) {
                successfulIds.push(idx);
             }
           }
@@ -1355,7 +1335,7 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
       } 
       catch (e: any) { 
         if (e.message.includes("[LỖI CẤU HÌNH]") || e.message.includes("CORS")) throw e; 
-        if (loopCount >= 3 && pendingIndices.length === batchTexts.length) throw e; 
+        if (loopCount >= 2 && pendingIndices.length === batchTexts.length) throw e;
       }
     }
     
@@ -1491,9 +1471,12 @@ export const generatePromptsForSingleSegment = async (
   let visualPlans = new Map<number, VisualPlan>();
   if (options?.visualPlanner !== false) {
     onStatusUpdate?.('Đang quy hoạch bố cục cảnh (chống lặp)...');
-    const run = plannerChain.then(() => planVisualsForScenes(segment.scenes, globalContext, requiredCharsByScene, onStatusUpdate));
-    plannerChain = run.catch(() => {});
-    try { visualPlans = await run; } catch { /* planner là tầng phụ trợ — bỏ qua */ }
+    // 👉 (Sửa hiệu năng) KHÔNG nối tiếp toàn cục qua plannerChain nữa: trước đây mọi phân
+    // đoạn xâu chuỗi planner tuần tự và CHẶN Bước 3 → phân đoạn sau chờ planner mọi phân
+    // đoạn trước, làm chậm cả kịch bản. Giờ mỗi phân đoạn chạy planner ĐỘC LẬP (đồng thời,
+    // đã bị giới hạn bởi limiter). Sổ đa dạng vẫn dùng chung nên dedup vẫn hoạt động (best-
+    // effort). Planner chỉ là tầng phụ trợ — hỏng thì Bước 3 vẫn chạy bình thường.
+    try { visualPlans = await planVisualsForScenes(segment.scenes, globalContext, requiredCharsByScene, onStatusUpdate); } catch { /* bỏ qua */ }
   }
 
   const systemInstruction = `You are a video-prompt engineer for Veo 3 (8-second historical B-roll for American viewers).
@@ -1550,7 +1533,7 @@ ${techDetailsStr}
 ${options?.audioMode !== 'keep' ? 'AUDIO: describe visuals only — no dialogue, no on-screen text, no music.' : ''}
 Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese.`;
 
-  const PROMPT_BATCH_SIZE = 5;
+  const PROMPT_BATCH_SIZE = 8;
   const batches: Scene[][] = [];
   for (let i = 0; i < segment.scenes.length; i += PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + PROMPT_BATCH_SIZE));
 
@@ -1669,7 +1652,10 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
         });
       };
 
-      while (pendingBatch.length > 0 && batchLoop < 3) {
+      // (Sửa hiệu năng) Trần vòng lặp mẻ 3→2: nếu output trượt lưới thì thử lại nhiều nhất
+      // 1 lần nữa rồi chấp nhận/đẩy xuống cứu hộ — cắt nửa số call thừa. Nhánh cứu hộ batch=1
+      // phía dưới vẫn vá được cảnh sót nên không mất cảnh nào.
+      while (pendingBatch.length > 0 && batchLoop < 2) {
         batchLoop++;
         try {
           const payload = pendingBatch.map(makePayload);
@@ -1682,12 +1668,12 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           for (const pi of generated) {
             const scene = pendingBatch.find(s => s.id === pi.sceneId);
             if (!scene) continue;
-            if (!hasAllRequiredFields(pi) && batchLoop < 3) continue;
+            if (!hasAllRequiredFields(pi) && batchLoop < 2) continue;
 
             const assembled = assembleFinalPrompt(pi);
             const required = detectPresentChars(scene);
             const verdict = validateNameAndRichness(assembled, required);
-            if (!verdict.ok && batchLoop < 3) {
+            if (!verdict.ok && batchLoop < 2) {
               continue;
             }
 
@@ -1697,7 +1683,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
 
           pendingBatch = pendingBatch.filter(s => !acceptedIds.includes(s.id));
         } catch (e: any) {
-          if (batchLoop >= 3) throw new Error(`Mẻ ${index + 1} quá tải: ${e.message}`);
+          if (batchLoop >= 2) throw new Error(`Mẻ ${index + 1} quá tải: ${e.message}`);
         }
       }
 
@@ -1709,7 +1695,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
         const stillPending: Scene[] = [];
         for (const scene of pendingBatch) {
           let rescued = false;
-          for (let attempt = 0; attempt < 2 && !rescued; attempt++) {
+          for (let attempt = 0; attempt < 1 && !rescued; attempt++) {
             try {
               const generated = await callAISafe<any[]>(
                 `Generate structured prompts for:\n${JSON.stringify([makePayload(scene)])}\n`,
