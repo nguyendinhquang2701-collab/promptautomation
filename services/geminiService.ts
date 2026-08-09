@@ -25,7 +25,7 @@ export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
   'gpt-4o': { id: 'gpt-4o', name: 'ChatGPT 4o', type: 'openai-compatible', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', keyPrefix: 'openai', group: 'OpenAI' },
   'gpt-4o-mini': { id: 'gpt-4o-mini', name: 'ChatGPT 4o Mini', type: 'openai-compatible', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1', keyPrefix: 'openai', group: 'OpenAI' },
   gemini: { id: 'gemini', name: 'Gemini 2.5 Flash', type: 'gemini', model: 'gemini-2.5-flash', keyPrefix: 'gemini', group: 'Google' },
-  deepseek: { id: 'deepseek', name: 'Deepseek V4', type: 'openai-compatible', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', keyPrefix: 'deepseek', group: 'Deepseek' },
+  deepseek: { id: 'deepseek', name: 'Deepseek V4', type: 'openai-compatible', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com/v1', keyPrefix: 'deepseek', group: 'Deepseek' },
   grok: { id: 'grok', name: 'Grok 4.1', type: 'openai-compatible', model: 'grok-4-1-fast-reasoning', baseUrl: 'https://api.x.ai/v1', keyPrefix: 'grok', group: 'xAI' },
   mistral: { id: 'mistral', name: 'Mistral Large', type: 'openai-compatible', model: 'mistral-large-latest', baseUrl: 'https://api.mistral.ai/v1', keyPrefix: 'mistral', group: 'Mistral' }
 };
@@ -41,14 +41,20 @@ export const loadAIProviders = () => {
         const customStr = localStorage.getItem('app1_custom_providers');
         if (customStr) {
             let customArr = JSON.parse(customStr);
-            // 👉 MIGRATION: DeepSeek khai tử deepseek-chat/deepseek-reasoner (2026/07/24).
-            // Config cũ lưu trong trình duyệt sẽ khiến API đứng → tự nâng lên model V4 và
-            // lưu lại, để người dùng chạy được ngay mà không phải sửa tay.
+            // 👉 MIGRATION: DeepSeek khai tử deepseek-chat/deepseek-reasoner (2026/07/24) VÀ
+            // endpoint chuẩn giờ là https://api.deepseek.com/v1 (thiếu /v1 → gọi API lỗi).
+            // Config cũ lưu trong trình duyệt sẽ khiến API đứng → tự nâng model + chuẩn hoá
+            // baseUrl, lưu lại, để người dùng chạy được ngay mà không phải sửa tay.
             let migrated = false;
             customArr = customArr.map((p: ProviderConfig) => {
-                if (p.model === 'deepseek-chat') { migrated = true; return { ...p, model: 'deepseek-v4-flash', name: /v3/i.test(p.name || '') ? 'Deepseek V4' : p.name }; }
-                if (p.model === 'deepseek-reasoner') { migrated = true; return { ...p, model: 'deepseek-v4-pro' }; }
-                return p;
+                let np: ProviderConfig = p;
+                if (np.model === 'deepseek-chat') { migrated = true; np = { ...np, model: 'deepseek-v4-flash', name: /v3/i.test(np.name || '') ? 'Deepseek V4' : np.name }; }
+                else if (np.model === 'deepseek-reasoner') { migrated = true; np = { ...np, model: 'deepseek-v4-pro' }; }
+                // Chuẩn hoá baseUrl DeepSeek thiếu /v1 (chỉ khi đúng host DeepSeek).
+                if (np.baseUrl && /(^|\/\/)api\.deepseek\.com\/?$/.test(np.baseUrl.trim())) {
+                    migrated = true; np = { ...np, baseUrl: 'https://api.deepseek.com/v1' };
+                }
+                return np;
             });
             if (migrated) localStorage.setItem('app1_custom_providers', JSON.stringify(customArr));
             customArr.forEach((p: ProviderConfig) => {
