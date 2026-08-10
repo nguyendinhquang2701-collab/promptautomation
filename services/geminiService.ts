@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Scene, ColorStyle, CharacterIdentity, PromptItem } from "../types";
+import { Scene, ColorStyle, CharacterIdentity, PromptItem, PromptElement } from "../types";
 
 export interface ProviderConfig {
   id: string;
@@ -589,6 +589,136 @@ const PROMPT_SCHEMA = {
     },
     required: ["sceneId", "camera_angle", "shot_size", "camera_movement", "setting", "time", "character", "action", "style"]
   }
+};
+
+// ============================================================================
+// 👉 THÀNH TỐ PROMPT TÙY CHỈNH (popup cài đặt): người dùng tick chọn thành tố nào
+// vào prompt, thêm thành tố riêng, và đặt trần độ dài. Lưu trên máy (localStorage).
+// - mode 'ai'    → bơm vào SCHEMA + system instruction để AI viết theo từng cảnh.
+// - mode 'fixed' → giá trị cố định, code tự gắn vào JSON cuối (không tốn AI, không sai).
+// ============================================================================
+export const DEFAULT_PROMPT_ELEMENTS: PromptElement[] = [
+  // 8 thành tố GỐC (đúng như app đang chạy) — mặc định BẬT.
+  { key: 'camera_angle', label: 'Góc máy', mode: 'ai', enabled: true, core: true, builtin: true },
+  { key: 'shot_size', label: 'Cỡ cảnh', mode: 'ai', enabled: true, core: true, builtin: true },
+  { key: 'camera_movement', label: 'Chuyển động máy', mode: 'ai', enabled: true, core: true, builtin: true },
+  { key: 'setting', label: 'Bối cảnh', mode: 'ai', enabled: true, core: true, builtin: true },
+  { key: 'time', label: 'Thời điểm', mode: 'ai', enabled: true, core: true, builtin: true },
+  { key: 'character', label: 'Nhân vật', mode: 'ai', enabled: true, core: true, builtin: true },
+  { key: 'action', label: 'Hành động (bắt buộc)', mode: 'ai', enabled: true, core: true, builtin: true, locked: true },
+  { key: 'style', label: 'Phong cách', mode: 'ai', enabled: true, core: true, builtin: true },
+  // Thành tố MỞ RỘNG — mặc định TẮT, khách tick tuỳ ý.
+  { key: 'aspect_ratio', label: 'Tỷ lệ khung hình', mode: 'fixed', enabled: false, builtin: true, value: '16:9' },
+  { key: 'no_logo', label: 'Không logo / nhãn hiệu', mode: 'fixed', enabled: false, builtin: true, value: 'no logos, no brand names, no watermarks' },
+  { key: 'no_text', label: 'Không chữ trên hình', mode: 'fixed', enabled: false, builtin: true, value: 'no on-screen text, no captions, no subtitles' },
+  { key: 'lighting', label: 'Ánh sáng', mode: 'ai', enabled: false, builtin: true, instruction: 'SHORT (≤10 words): light direction, quality, color temperature. e.g. "soft window daylight, warm, low contrast". Never quality jargon.' },
+  { key: 'weather', label: 'Thời tiết / không khí', mode: 'ai', enabled: false, builtin: true, instruction: 'SHORT (≤8 words): weather or air in the scene. e.g. "light morning mist drifting".' },
+  { key: 'mood', label: 'Cảm xúc chủ đạo', mode: 'ai', enabled: false, builtin: true, instruction: 'ONE or TWO words only. e.g. "solemn" or "quiet hope".' },
+  { key: 'color_palette', label: 'Bảng màu', mode: 'ai', enabled: false, builtin: true, instruction: 'SHORT (3-5 words): dominant colors of the frame. e.g. "amber, walnut brown, deep shadow".' },
+  { key: 'sound', label: 'Âm thanh nền', mode: 'ai', enabled: false, builtin: true, instruction: 'SHORT (≤10 words): ambient sound only, no dialogue, no music. e.g. "low room tone, distant birdsong".' },
+  { key: 'lens', label: 'Ống kính / DOF', mode: 'ai', enabled: false, builtin: true, instruction: 'SHORT: lens + depth of field. e.g. "35mm, shallow depth of field".' },
+];
+
+const ELEMENTS_LS_KEY = 'app1_prompt_elements';
+const MAXCHARS_LS_KEY = 'app1_prompt_max_chars';
+
+// Ghép catalog mặc định với lựa chọn đã lưu: builtin lấy trạng thái tick + value/instruction
+// người dùng chỉnh; thành tố tự thêm nối vào cuối. App thêm builtin mới vẫn hiện đủ.
+export const loadPromptElements = (): PromptElement[] => {
+  const defaults = DEFAULT_PROMPT_ELEMENTS.map(e => ({ ...e }));
+  try {
+    if (typeof localStorage === 'undefined') return defaults;
+    const savedStr = localStorage.getItem(ELEMENTS_LS_KEY);
+    if (!savedStr) return defaults;
+    const saved: PromptElement[] = JSON.parse(savedStr);
+    if (!Array.isArray(saved)) return defaults;
+    const savedByKey = new Map(saved.filter(s => s && s.key).map(s => [s.key, s]));
+    const merged = defaults.map(def => {
+      const s = savedByKey.get(def.key);
+      if (!s) return def;
+      return {
+        ...def,
+        enabled: def.locked ? true : !!s.enabled,
+        value: typeof s.value === 'string' ? s.value : def.value,
+        instruction: typeof s.instruction === 'string' && !def.core ? s.instruction : def.instruction,
+      };
+    });
+    for (const s of saved) {
+      if (!s || !s.key || defaults.some(d => d.key === s.key)) continue;
+      merged.push({ key: s.key, label: s.label || s.key, mode: s.mode === 'fixed' ? 'fixed' : 'ai', enabled: !!s.enabled, value: s.value, instruction: s.instruction, builtin: false });
+    }
+    return merged;
+  } catch { return defaults; }
+};
+export const savePromptElements = (els: PromptElement[]) => {
+  try { localStorage.setItem(ELEMENTS_LS_KEY, JSON.stringify(els)); } catch { /* private mode */ }
+};
+export const loadMaxPromptChars = (): number => {
+  try { const v = parseInt(localStorage.getItem(MAXCHARS_LS_KEY) || '0', 10); return Number.isFinite(v) && v > 0 ? v : 0; } catch { return 0; }
+};
+export const saveMaxPromptChars = (n: number) => {
+  try { localStorage.setItem(MAXCHARS_LS_KEY, String(Math.max(0, Math.floor(n) || 0))); } catch { /* private mode */ }
+};
+
+// Trần độ dài (đếm theo JSON 1 dòng thực xuất): cắt 'action' rồi 'setting' theo RANH GIỚI
+// CÂU từ cuối lên (giữ tối thiểu 1 câu) — không bao giờ cắt cụt giữa câu, không đụng
+// 'character' (giữ khối VERBATIM cho validator tên).
+const enforceMaxChars = (obj: Record<string, string>, maxChars: number) => {
+  if (!maxChars || maxChars <= 0) return;
+  const len = () => JSON.stringify(obj).length;
+  for (const key of ['action', 'setting']) {
+    while (len() > maxChars) {
+      const s = obj[key] || '';
+      const sentences = s.match(/[^.!?]+[.!?]+["'”’]?\s*/g);
+      if (!sentences || sentences.length <= 1) break;
+      obj[key] = sentences.slice(0, -1).join('').trim();
+    }
+    if (len() <= maxChars) return;
+  }
+};
+
+// Cảnh mẫu để popup XEM TRƯỚC theo đúng thành tố đang tick + trần độ dài.
+const SAMPLE_PI: Record<string, string> = {
+  camera_angle: 'eye-level',
+  shot_size: 'medium shot',
+  camera_movement: 'slow push-in',
+  setting: '1950s radio studio, warm lamplight',
+  time: '1950s, evening',
+  character: 'A Nam (middle-aged Guatemalan man, short dark hair, medium build, charcoal suit)',
+  action: 'He leans toward the vintage microphone and speaks steadily, one hand resting on the desk, shoulders relaxed. Warm lamplight falls across his calm face as dust drifts slowly through the beam. The heavy curtains hang still behind him.',
+  style: 'warm documentary tones. Rendered in the style of authentic documentary realism, natural lighting, true-to-life color.',
+  lighting: 'soft warm key from desk lamp, low contrast',
+  weather: 'still indoor air, faint dust haze',
+  mood: 'solemn',
+  color_palette: 'amber, walnut brown, deep shadow',
+  sound: 'low room tone, soft tube hum',
+  lens: '35mm, shallow depth of field',
+};
+export const buildSamplePrompt = (els: PromptElement[], maxChars: number): { pretty: string; chars: number } => {
+  const obj: Record<string, string> = {};
+  for (const e of els) {
+    if (!e.enabled) continue;
+    if (e.mode === 'fixed') { obj[e.key] = (e.value || '').trim(); continue; }
+    obj[e.key] = SAMPLE_PI[e.key] ?? '(AI sẽ tự viết nội dung này theo từng cảnh)';
+  }
+  enforceMaxChars(obj, maxChars);
+  return { pretty: JSON.stringify(obj, null, 2), chars: JSON.stringify(obj).length };
+};
+
+// Schema động theo thành tố đang bật: core giữ mô tả gốc trong PROMPT_SCHEMA, thành tố
+// AI thêm dùng instruction của nó. Thành tố 'fixed' KHÔNG vào schema (code tự gắn).
+const buildPromptSchema = (els: PromptElement[]) => {
+  const coreProps: any = (PROMPT_SCHEMA as any).items.properties;
+  const props: any = { sceneId: coreProps.sceneId };
+  const required: string[] = ['sceneId'];
+  for (const e of els) {
+    if (!e.enabled || e.mode !== 'ai') continue;
+    props[e.key] = coreProps[e.key] ? coreProps[e.key] : { type: Type.STRING, description: (e.instruction || e.label || e.key) + ' Keep it SHORT.' };
+    if (e.core && e.key !== 'character') required.push(e.key);
+  }
+  if (props.character) { /* character bật thì vẫn required như cũ */ required.push('character'); }
+  props._subjects = coreProps._subjects;
+  return { type: Type.ARRAY, items: { type: Type.OBJECT, properties: props, required } };
 };
 
 // 👉 TỪ VỰNG STOCK-SAFE: cố tình tiết chế. Ưu tiên medium/wide + camera tĩnh (tối đa
@@ -1457,11 +1587,20 @@ export const generatePromptsForSingleSegment = async (
 ): Promise<{ items: PromptItem[], rescueProvider?: string }> => {
   if (segment.scenes.length === 0) return { items: [] };
   const colorMoodDesc = getColorDescription(colorStyle);
-  
+
   // 👉 Mặc định "trông như quay thật" — KHÔNG dùng từ phim nhựa (film/grain) để Veo
   // không vẽ viền phim, lỗ răng cưa, xước đen lên video.
   const finalStyleStr = fixFilmLook(styleSummary ? styleSummary.trim() : 'authentic documentary realism, natural lighting, true-to-life color');
   const techDetailsStr = styleAnalysis ? `Technical rendering details to follow: ${styleAnalysis}` : '';
+
+  // 👉 THÀNH TỐ PROMPT theo cài đặt người dùng (popup ⚙️, lưu localStorage).
+  const promptElements = loadPromptElements();
+  const maxPromptChars = loadMaxPromptChars();
+  const aiExtraElements = promptElements.filter(e => e.enabled && e.mode === 'ai' && !e.core);
+  const fixedElements = promptElements.filter(e => e.enabled && e.mode === 'fixed');
+  const disabledCoreKeys = promptElements.filter(e => e.core && !e.enabled).map(e => e.key);
+  const dynamicPromptSchema = buildPromptSchema(promptElements);
+  const requiredCoreKeys = promptElements.filter(e => e.enabled && e.core && e.key !== 'character').map(e => e.key);
 
   // BƠM TỪ ĐIỂN NHÂN VẬT VÀO BƯỚC CUỐI
   const charProfiles = buildCharacterProfiles(characters);
@@ -1503,7 +1642,16 @@ FIELD GUIDE:
 - action: the heart of the prompt (~40-70 words) — ONE single, natural, graceful, SIMPLE action unfolding smoothly across the 8 seconds. Show HOW it looks: posture, pace, gaze, the gentle motion around it. Must be ERROR-FREE (see NO ERRORS).
 - style: short style + color mood, ending exactly with "Rendered in the style of ${finalStyleStr}."
 - _subjects: comma-separated CANONICAL_NAMEs present (internal).
-
+${aiExtraElements.length ? `
+ADDITIONAL FIELDS (the user enabled these — fill each one for EVERY scene, keep them SHORT):
+${aiExtraElements.map(e => `- ${e.key}: ${e.instruction || e.label}`).join('\n')}
+` : ''}${disabledCoreKeys.length ? `
+DISABLED FIELDS: do NOT output these fields at all: ${disabledCoreKeys.join(', ')}.${disabledCoreKeys.includes('character') ? " Weave each present character's VERBATIM_BLOCK directly into 'action' instead (first mention), so every character still appears by CANONICAL_NAME." : ''}
+` : ''}${fixedElements.length ? `
+AUTO-APPENDED FIELDS: the app itself appends these fields with fixed values — do NOT write them: ${fixedElements.map(e => e.key).join(', ')}.
+` : ''}${maxPromptChars > 0 ? `
+LENGTH BUDGET: keep the WHOLE JSON object under ~${maxPromptChars} characters. Shorten 'action' first to fit; never sacrifice the character descriptions.
+` : ''}
 ONE SCENE PER PROMPT (critical): each prompt is a SINGLE continuous moment — ONE place, ONE time, ONE action. Never change location, never jump in time, never chain actions ("then..."), never a montage or split screen. If the input text implies several moments, pick the single most visual one and silently drop the rest.
 
 NEVER A NARRATOR ON SCREEN (critical): there is NO narrator, host, presenter, or modern framing person in any shot. Narration is off-screen voice-over only. Every scene lives ENTIRELY inside the story's own world and era — show only period-appropriate people, places and objects for that scene's time. NEVER put a modern-day person (or a person looking at the camera / addressing the viewer) into a historical scene. If a scene's text is pure narration with no character, illustrate its MEANING with era-appropriate people or objects doing something in that world — never a presenter talking to camera.
@@ -1549,28 +1697,28 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
   const batches: Scene[][] = [];
   for (let i = 0; i < segment.scenes.length; i += PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + PROMPT_BATCH_SIZE));
 
-  // 👉 Ghép thành PROMPT JSON gọn 8 trường (đúng yêu cầu người dùng). Dồn mô tả ở
-  // 'action', các trường khác ngắn. Đảm bảo 'style' kết thúc bằng câu neo phong cách.
+  // 👉 Ghép PROMPT JSON theo THÀNH TỐ người dùng đã tick (popup ⚙️): thành tố 'ai' lấy
+  // nội dung AI viết; thành tố 'fixed' gắn giá trị cố định. Áp trần độ dài nếu có.
   const assembleFinalPrompt = (p: any): string => {
     const clean = (s: any) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '');
     const dotEnd = (s: string) => (!s ? '' : (/[.!?]$/.test(s) ? s : s + '.'));
-    let style = clean(p.style);
-    const anchor = `Rendered in the style of ${finalStyleStr}.`;
-    if (!style.toLowerCase().includes('rendered in the style of')) {
-      style = (style ? dotEnd(style) + ' ' : '') + anchor;
-    } else {
-      style = dotEnd(style);
+    const obj: Record<string, string> = {};
+    for (const e of promptElements) {
+      if (!e.enabled) continue;
+      if (e.mode === 'fixed') { obj[e.key] = (e.value || '').trim(); continue; }
+      if (e.key === 'style') {
+        let style = clean(p.style);
+        if (!style.toLowerCase().includes('rendered in the style of')) {
+          style = (style ? dotEnd(style) + ' ' : '') + `Rendered in the style of ${finalStyleStr}.`;
+        } else {
+          style = dotEnd(style);
+        }
+        obj.style = style;
+        continue;
+      }
+      obj[e.key] = clean(p[e.key]);
     }
-    const obj = {
-      camera_angle: clean(p.camera_angle),
-      shot_size: clean(p.shot_size),
-      camera_movement: clean(p.camera_movement),
-      setting: clean(p.setting),
-      time: clean(p.time),
-      character: clean(p.character),
-      action: clean(p.action),
-      style,
-    };
+    enforceMaxChars(obj, maxPromptChars);
     return JSON.stringify(obj);   // 1 prompt = 1 dòng (JSON gọn, không xuống dòng)
   };
 
@@ -1625,8 +1773,9 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
       };
 
       const hasAllRequiredFields = (pi: any): boolean => {
-        // 'character' được phép rỗng (cảnh không người) nên không tính vào đây.
-        const need = ["sceneId", "camera_angle", "shot_size", "camera_movement", "setting", "time", "action", "style"];
+        // Chỉ đòi các thành tố CORE đang bật ('character' được phép rỗng — cảnh không người;
+        // thành tố mở rộng thiếu thì bỏ qua, không bắt tạo lại).
+        const need = ["sceneId", ...requiredCoreKeys];
         return need.every(k => pi[k] !== undefined && pi[k] !== null && (typeof pi[k] !== 'string' || pi[k].trim().length > 0));
       };
 
@@ -1673,7 +1822,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           const payload = pendingBatch.map(makePayload);
           const generated = await callAISafe<any[]>(
             `Generate structured prompts for:\n${JSON.stringify(payload)}\n`,
-            systemInstruction, PROMPT_SCHEMA, 0.35, limitPromptConcurrency, providerId
+            systemInstruction, dynamicPromptSchema, 0.35, limitPromptConcurrency, providerId
           );
 
           const acceptedIds: number[] = [];
@@ -1711,7 +1860,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
             try {
               const generated = await callAISafe<any[]>(
                 `Generate structured prompts for:\n${JSON.stringify([makePayload(scene)])}\n`,
-                systemInstruction, PROMPT_SCHEMA, 0.4, limitPromptConcurrency, providerId
+                systemInstruction, dynamicPromptSchema, 0.4, limitPromptConcurrency, providerId
               );
               const list = Array.isArray(generated) ? generated : [];
               const pi = list.find(g => g?.sceneId === scene.id) || list[0];

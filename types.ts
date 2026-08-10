@@ -63,3 +63,21 @@ export interface PromptResult {
   rawText: string;
   prompts: string[];
 }
+
+// 👉 THÀNH TỐ PROMPT (người dùng tick chọn trong popup cài đặt).
+// 2 cơ chế truyền dữ liệu vào prompt gửi đi:
+//  - mode 'ai'    → thành tố được bơm vào SCHEMA + system instruction, AI viết nội dung
+//                   RIÊNG cho từng cảnh (vd: lighting, mood).
+//  - mode 'fixed' → giá trị CỐ ĐỊNH, code tự gắn thẳng vào JSON cuối, không tốn AI và
+//                   không bao giờ sai (vd: aspect_ratio "16:9", no_logo).
+export interface PromptElement {
+  key: string;          // tên trường trong JSON prompt (snake_case, ascii)
+  label: string;        // nhãn hiển thị tiếng Việt
+  mode: 'ai' | 'fixed';
+  enabled: boolean;
+  core?: boolean;       // 8 thành tố gốc của app (mặc định BẬT)
+  builtin?: boolean;    // có sẵn trong app — không xoá được, chỉ tick bật/tắt
+  locked?: boolean;     // action: linh hồn của prompt — luôn bật
+  value?: string;       // mode 'fixed': giá trị gắn vào prompt (người dùng sửa được)
+  instruction?: string; // mode 'ai': hướng dẫn để AI viết trường này
+}

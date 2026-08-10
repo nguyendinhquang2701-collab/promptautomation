@@ -1,5 +1,6 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { ScriptProject, CharacterIdentity, ColorStyle } from '../types';
+import PromptSettings from './PromptSettings';
 
 interface ScriptInputProps {
   projects: ScriptProject[];
@@ -50,6 +51,7 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
   colorStyle, setColorStyle, promptOptions, setPromptOptions
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showPromptSettings, setShowPromptSettings] = useState(false);
   const hasContent = projects.some(p => p.content.trim().length > 0);
   const canExtract = rawScript.trim().length > 10;
 
@@ -260,6 +262,16 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
                   </div>
                   <h3 className="text-base font-bold text-blue-400">Control Panel</h3>
               </div>
+
+              {/* 👉 POPUP CÀI ĐẶT THÀNH TỐ PROMPT */}
+              <button
+                onClick={() => setShowPromptSettings(true)}
+                className="w-full flex items-center justify-between bg-slate-950 border border-indigo-500/30 hover:border-indigo-500/60 rounded-lg p-2.5 text-indigo-300 text-xs font-semibold cursor-pointer transition-all group"
+              >
+                <span>⚙️ Thành tố Prompt & Độ dài</span>
+                <span className="text-slate-600 group-hover:text-indigo-400 transition-all">Tùy chỉnh →</span>
+              </button>
+              <PromptSettings open={showPromptSettings} onClose={() => setShowPromptSettings(false)} />
 
               <div>
                 <label className="text-[9px] uppercase font-black text-slate-500 tracking-widest mb-1.5 block">
