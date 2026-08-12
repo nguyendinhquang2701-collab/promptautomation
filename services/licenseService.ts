@@ -1,28 +1,29 @@
 // ============================================================================
 //  HỆ THỐNG MÃ KÍCH HOẠT (LICENSE) — logic thuần + REST tới Firebase RTDB
 // ----------------------------------------------------------------------------
+//  Sơ đồ dữ liệu (khớp với công cụ admin Key_tool): veo3_licenses/{KEY}
+//    { customerName, durationMs, createdAt, deviceId, deviceAt, expiresAt }
+//
 //  Nguyên tắc:
-//   - Mỗi mã = 1 phiên đăng nhập DUY NHẤT. Kích hoạt ở máy mới => máy cũ bị "đá".
-//   - Hạn dùng (expiresAt) được chốt NGAY LÚC TẠO MÃ, không đổi được từ client
-//     (rule Firebase đóng băng). Client chỉ được ghi 2 trường: session, sessionAt.
-//   - Thời gian so hạn LẤY TỪ SERVER (chống chỉnh đồng hồ máy). Không bao giờ
-//     dùng Date.now() để xét hết hạn.
+//   - Mỗi mã = 1 phiên DUY NHẤT. Kích hoạt ở máy mới => ghi đè deviceId =>
+//     máy cũ lần kiểm tra kế tiếp thấy lệch => bị đăng xuất (chuyển máy tự do).
+//   - HẠN DÙNG tính từ LÚC KÍCH HOẠT LẦN ĐẦU: expiresAt = giờ-kích-hoạt + durationMs.
+//     durationMs = -1 => vĩnh viễn (không đặt expiresAt).
+//   - So hạn theo GIỜ SERVER (neo bằng performance.now, KHÔNG dùng Date.now)
+//     => khách chỉnh đồng hồ máy vô ích.
+//   - Firebase để MỞ (không cần secret) cho đơn giản; client ghi trực tiếp.
 // ============================================================================
 
 const DB_BASE = "https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app";
 const licUrl = (code: string) => `${DB_BASE}/veo3_licenses/${encodeURIComponent(code)}.json`;
 
-// Bảng chữ tạo mã: bỏ 0 1 O I L U (dễ nhìn nhầm). 30 ký tự.
-export const LICENSE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ';
-
 export type LicenseRecord = {
-  plan?: string;
-  durationDays?: number;   // 30 | 90 | 365 | 0 (0 = vĩnh viễn)
+  customerName?: string;
+  durationMs?: number;     // -1 = vĩnh viễn
   createdAt?: number;
-  expiresAt?: number;      // 0 = vĩnh viễn
-  disabled?: boolean;
-  session?: string | null;
-  sessionAt?: number;
+  deviceId?: string | null; // token của máy đang giữ phiên
+  deviceAt?: number;        // giờ server lần chiếm phiên gần nhất
+  expiresAt?: number | null; // null/thiếu = chưa kích hoạt hoặc vĩnh viễn
 };
 
 export type StoredLicense = { code: string; token: string };
@@ -32,31 +33,30 @@ export type LicenseState = 'ACTIVE' | 'EXPIRED' | 'KICKED' | 'REVOKED';
 //  1) HÀM THUẦN (dễ test, không đụng mạng)
 // ---------------------------------------------------------------------------
 
-// Chuẩn hoá mã người dùng gõ: viết hoa, bỏ mọi ký tự không phải A-Z0-9 (dấu -, space...).
+// Chuẩn hoá mã: viết hoa, bỏ khoảng trắng + ký tự Firebase cấm (. $ # [ ] /). Giữ dấu '-'.
 export const normalizeCode = (raw: string): string =>
-  (raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  (raw || '').toUpperCase().replace(/[\s.$#\[\]/]/g, '').trim();
 
-// Đúng định dạng (12 ký tự chữ-số). Không kiểm alphabet để dễ tính, sai mã sẽ trượt ở bước tra DB.
-export const isValidFormat = (code: string): boolean => /^[A-Z0-9]{12}$/.test(code);
+// Đúng định dạng: bắt đầu bằng chữ/số, cho phép chữ-số và dấu '-', dài >= 4 (vd PRO-A7K9QM).
+export const isValidFormat = (code: string): boolean => /^[A-Z0-9][A-Z0-9-]{2,}$/.test(code);
 
-// Hiển thị đẹp: A7KF-9QMT-4XBP
-export const formatCodeDisplay = (code: string): string =>
-  normalizeCode(code).replace(/(.{4})(?=.)/g, '$1-');
+// Hiển thị: giữ nguyên (mã đã có sẵn dấu '-' từ tiền tố).
+export const formatCodeDisplay = (code: string): string => normalizeCode(code);
 
-// Hết hạn? expiresAt=0 (hoặc thiếu) => vĩnh viễn => không bao giờ hết. serverNow phải là số.
+// Hết hạn? expiresAt không phải số dương => vĩnh viễn/chưa kích hoạt => không hết. serverNow phải là số.
 export const isExpired = (expiresAt: unknown, serverNow: number | null): boolean =>
   typeof expiresAt === 'number' && expiresAt > 0 &&
   typeof serverNow === 'number' && serverNow > expiresAt;
 
-// Đánh giá trạng thái. Thứ tự ưu tiên: REVOKED > EXPIRED > KICKED > ACTIVE.
+// Đánh giá trạng thái. Ưu tiên: REVOKED > EXPIRED > KICKED > ACTIVE.
 export const evaluate = (
   record: LicenseRecord | null | undefined,
   tokenLocal: string,
   serverNow: number | null
 ): LicenseState => {
-  if (!record || record.disabled === true) return 'REVOKED';
+  if (!record) return 'REVOKED';                       // bị thu hồi (xoá khỏi DB)
   if (isExpired(record.expiresAt, serverNow)) return 'EXPIRED';
-  if (record.session !== tokenLocal) return 'KICKED';
+  if (record.deviceId !== tokenLocal) return 'KICKED'; // máy khác đã chiếm phiên
   return 'ACTIVE';
 };
 
@@ -72,14 +72,14 @@ export const setServerAnchor = (serverMs: number): void => {
     _anchor = { server: serverMs, perf: nowPerf() };
   }
 };
-// Trả về giờ server ước lượng, hoặc null nếu chưa từng neo (KHÔNG fallback Date.now cho việc xét hạn).
+// Giờ server ước lượng, hoặc null nếu chưa neo (KHÔNG fallback Date.now cho việc xét hạn).
 export const getServerNow = (): number | null =>
   _anchor ? _anchor.server + (nowPerf() - _anchor.perf) : null;
 
 export const _resetAnchorForTest = (): void => { _anchor = null; };
 
 // ---------------------------------------------------------------------------
-//  3) TẠO MÃ / TOKEN (crypto)
+//  3) TOKEN thiết bị (crypto)
 // ---------------------------------------------------------------------------
 const cryptoObj = (): Crypto => {
   const c = (typeof crypto !== 'undefined' ? crypto : (globalThis as any).crypto);
@@ -91,14 +91,6 @@ export const genToken = (): string => {
   const a = new Uint8Array(16);
   cryptoObj().getRandomValues(a);
   return Array.from(a).map(b => b.toString(16).padStart(2, '0')).join('');
-};
-
-export const genCode = (): string => {
-  const a = new Uint32Array(12);
-  cryptoObj().getRandomValues(a);
-  let s = '';
-  for (let i = 0; i < 12; i++) s += LICENSE_ALPHABET[a[i] % LICENSE_ALPHABET.length];
-  return s;
 };
 
 // ---------------------------------------------------------------------------
@@ -147,45 +139,48 @@ const fetchJSON = async (url: string, opts: RequestInit = {}, ms = 15000): Promi
   try { return JSON.parse(text); } catch { throw new NetworkError('bad-json'); }
 };
 
-// Đọc bản ghi mã. Trả null nếu mã không tồn tại. Ném NetworkError nếu lỗi mạng.
+// Đọc bản ghi mã. null nếu không tồn tại. Ném NetworkError nếu lỗi mạng.
 export const getRecord = async (code: string): Promise<LicenseRecord | null> => {
   const res = await fetchJSON(licUrl(code), { method: 'GET' });
   return (res && typeof res === 'object') ? (res as LicenseRecord) : null;
 };
 
-// Lấy giờ server: PATCH sessionAt = timestamp sentinel, Firebase trả lại giá trị đã giải.
-// (Chỉ đụng trường sessionAt — vô hại, rule cho phép.) Đồng thời neo đồng hồ.
+// Lấy giờ server: PATCH deviceAt = timestamp sentinel, Firebase trả lại giá trị đã giải. Đồng thời neo đồng hồ.
 export const probeServerTime = async (code: string): Promise<number> => {
   const res = await fetchJSON(licUrl(code), {
     method: 'PATCH',
-    body: JSON.stringify({ sessionAt: { '.sv': 'timestamp' } }),
+    body: JSON.stringify({ deviceAt: { '.sv': 'timestamp' } }),
   });
-  const t = res && typeof res.sessionAt === 'number' ? res.sessionAt : null;
+  const t = res && typeof res.deviceAt === 'number' ? res.deviceAt : null;
   if (t === null) throw new NetworkError('no-server-time');
   setServerAnchor(t);
   return t;
 };
 
-// Chiếm phiên: ghi session = token của MÁY NÀY (đá máy cũ). Trả về giờ server từ echo.
-export const claimSession = async (code: string, token: string): Promise<number | null> => {
+// Chiếm phiên: ghi deviceId = token máy này (đá máy cũ). extra = { expiresAt } khi kích hoạt lần đầu.
+// Trả về giờ server từ echo (deviceAt).
+export const claimSession = async (
+  code: string, token: string, extra: Record<string, any> = {}
+): Promise<number | null> => {
   const res = await fetchJSON(licUrl(code), {
     method: 'PATCH',
-    body: JSON.stringify({ session: token, sessionAt: { '.sv': 'timestamp' } }),
+    body: JSON.stringify({ deviceId: token, deviceAt: { '.sv': 'timestamp' }, ...extra }),
   });
-  const t = res && typeof res.sessionAt === 'number' ? res.sessionAt : null;
+  const t = res && typeof res.deviceAt === 'number' ? res.deviceAt : null;
   if (t !== null) setServerAnchor(t);
   return t;
 };
 
 // ---------------------------------------------------------------------------
-//  6) TIỆN ÍCH HIỂN THỊ (dùng trong app / admin)
+//  6) TIỆN ÍCH HIỂN THỊ
 // ---------------------------------------------------------------------------
-export const PLANS: { label: string; days: number }[] = [
-  { label: '1 tháng', days: 30 },
-  { label: '3 tháng', days: 90 },
-  { label: '1 năm', days: 365 },
-  { label: 'Vĩnh viễn', days: 0 },
-];
-
-export const planLabelFromDays = (d: number | undefined): string =>
-  d === 0 ? 'Vĩnh viễn' : d === 30 ? '1 tháng' : d === 90 ? '3 tháng' : d === 365 ? '1 năm' : `${d} ngày`;
+export const planLabelFromMs = (ms: number | undefined): string => {
+  if (ms === -1) return 'Vĩnh viễn';
+  if (ms === 3600000) return '1 giờ';
+  if (ms === 604800000) return '7 ngày';
+  if (ms === 2592000000) return '1 tháng';
+  if (ms === 7776000000) return '3 tháng';
+  if (ms === 31536000000) return '1 năm';
+  if (typeof ms === 'number' && ms > 0) return `${Math.round(ms / 86400000)} ngày`;
+  return '-';
+};

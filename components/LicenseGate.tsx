@@ -91,15 +91,15 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setFormError('');
     try {
       const code = normalizeCode(rawCode);
-      if (!isValidFormat(code)) { setFormError('Mã không đúng định dạng (cần 12 ký tự).'); return; }
+      if (!isValidFormat(code)) { setFormError('Mã không đúng định dạng.'); return; }
 
       let rec;
       try { rec = await getRecord(code); }
       catch { setFormError('Lỗi mạng — kiểm tra kết nối rồi thử lại.'); return; }
 
       if (rec === null) { setFormError('Mã không tồn tại.'); return; }
-      if (rec.disabled === true) { setFormError('Mã đã bị khoá.'); return; }
 
+      // Lấy giờ server (bắt buộc, để tính/so hạn theo server).
       let sNow = getServerNow();
       if (sNow === null) {
         try { sNow = await probeServerTime(code); }
@@ -107,8 +107,15 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       }
       if (isExpired(rec.expiresAt, sNow)) { setFormError('Mã đã hết hạn sử dụng.'); return; }
 
+      // Kích hoạt LẦN ĐẦU (chưa có expiresAt và không vĩnh viễn) => chốt hạn từ bây giờ.
+      const extra: Record<string, any> = {};
+      const notYetActivated = typeof rec.expiresAt !== 'number';
+      if (notYetActivated && typeof rec.durationMs === 'number' && rec.durationMs > 0) {
+        extra.expiresAt = sNow + rec.durationMs;
+      }
+
       const token = genToken();
-      try { await claimSession(code, token); }
+      try { await claimSession(code, token, extra); }
       catch { setFormError('Lỗi mạng — kiểm tra kết nối rồi thử lại.'); return; }
 
       saveStoredLicense({ code, token });
@@ -166,9 +173,9 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 <input
                   style={inputStyle}
                   value={formatCodeDisplay(codeInput)}
-                  onChange={(e) => setCodeInput(normalizeCode(e.target.value).slice(0, 12))}
+                  onChange={(e) => setCodeInput(normalizeCode(e.target.value).slice(0, 40))}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !busy) doClaim(codeInput); }}
-                  placeholder="XXXX-XXXX-XXXX"
+                  placeholder="VD: PRO-A7K9QM"
                   autoFocus
                   spellCheck={false}
                   autoComplete="off"

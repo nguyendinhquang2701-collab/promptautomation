@@ -1,86 +1,63 @@
-# Hệ thống mã kích hoạt — Hướng dẫn cho người bán
+# Mã kích hoạt — Hướng dẫn cho người bán
 
-Mục tiêu: bán app, mỗi mã có **hạn dùng** (1 tháng / 3 tháng / 1 năm / vĩnh viễn) và
-**chỉ đăng nhập được ở một nơi cùng lúc** — kích hoạt ở máy mới thì máy cũ tự đăng xuất.
+Bán app, mỗi mã có **hạn dùng** (1 giờ thử / 7 ngày / 1 tháng / 3 tháng / 1 năm / vĩnh viễn)
+và **chỉ đăng nhập được ở một nơi cùng lúc** — khách kích hoạt ở máy mới thì máy cũ tự đăng xuất.
 
-Không cần server riêng. Chỉ dùng Firebase Realtime Database (đã có sẵn trong app).
-
----
-
-## Cài đặt 1 lần (khoảng 3 phút)
-
-### Bước 1 — Dán luật bảo mật (bắt buộc)
-
-Vào **Firebase Console → Realtime Database → tab Rules**, xoá luật cũ, dán toàn bộ nội dung
-file `firebase-rules.json` vào, nhấn **Publish**.
-
-Luật này khoá lại để:
-- Khách **không xem được** danh sách mã của bạn.
-- Khách **không tự sửa** được hạn dùng / gói / trạng thái khoá (các trường tiền bạc bị "đóng băng").
-- Khách chỉ được ghi 2 trường kỹ thuật: `session` và `sessionAt` (phục vụ việc "1 nơi 1 lúc").
-- Phần thống kê `veo3_stats` của app vẫn chạy bình thường.
-
-### Bước 2 — Lấy Database Secret (để tạo/quản lý mã)
-
-Vào **Firebase Console → ⚙️ Project settings → Service accounts → Database secrets**,
-copy chuỗi secret. Dùng nó trong công cụ quản lý ở bước sau.
-
-> Nếu dự án của bạn không hiện "Database secrets", bỏ qua — bạn vẫn tạo mã được bằng cách
-> dán JSON thủ công vào Console (xem phần "Không có secret").
+**Không cần cài đặt gì cả.** Firebase của app đã mở sẵn, không cần secret, không cần chỉnh luật.
 
 ---
 
-## Tạo mã để bán
+## Tạo mã để bán (chỉ 3 bước)
 
-Mở file **`admin.html`** bằng trình duyệt (nhấp đúp — chạy ngay trên máy bạn, **không cần** đưa lên web).
+1. Mở file **`admin.html`** — nhấp đúp, nó mở ngay bằng Chrome (chạy trên máy bạn, không cần đưa lên web).
+2. Nhập **mật khẩu** → bấm **Truy Cập**.
+   > Mật khẩu mặc định là `veo3`. Đổi bằng cách mở `admin.html` bằng Notepad, tìm dòng
+   > `const ADMIN_PASSWORD = "veo3";` ở đầu phần script và sửa thành mật khẩu của bạn.
+3. Điền **Tên khách hàng** (tuỳ chọn), chọn **Thời hạn**, **Số lượng** → bấm **Tạo**.
+   Mã hiện ngay trong bảng và **tự copy vào clipboard**. Gửi mã cho khách là xong.
 
-1. Dán **Database Secret** vào ô cấu hình.
-2. Chọn **gói hạn dùng** + **số lượng** → **Tạo mã**.
-3. Nhấn **⬆️ Ghi thẳng lên Firebase** → xong. Mỗi mã hiện ở cột "Mã (gửi khách)".
-4. Copy mã, gửi cho khách. Khách dán mã vào app là dùng được.
-
-**Không có secret?** Sau khi Tạo mã, nhấn **📋 Copy JSON**, rồi vào
-**Console → Realtime Database → node `veo3_licenses`** và dán/thêm thủ công. Kết quả như nhau.
+Khách dán mã vào app (màn hình "Nhập mã kích hoạt") là dùng được.
 
 ---
 
 ## Quản lý mã đã bán
 
-Cũng trong `admin.html`, phần **🛠️ Quản lý một mã** (cần Database Secret):
+Ngay trong bảng của `admin.html`:
 
-- **Tra cứu**: xem gói, hạn, còn hạn hay không, đang được dùng ở đâu.
-- **🔒 Khoá mã / 🔓 Mở khoá**: khoá là chặn dùng ngay (ví dụ khách bùng tiền).
-- **📴 Đá thiết bị**: buộc khách đăng nhập lại (dùng khi cần thu hồi phiên).
-- **➕ Gia hạn thêm 30 ngày**: cộng dồn hạn (nhấn nhiều lần để cộng nhiều).
-- **🗑️ Xoá mã**: xoá vĩnh viễn.
+- **Trạng thái**: `Tồn kho` (chưa ai kích hoạt) · `Đang chạy` (đang có người dùng) · `Hết hạn`.
+- **Copy**: copy lại mã để gửi khách.
+- **Đá máy**: buộc khách đăng nhập lại (dùng khi muốn chuyển mã sang máy khác cho khách).
+- **Thu hồi**: xoá mã vĩnh viễn (khách mất quyền dùng ngay).
 
 ---
 
 ## Cơ chế "1 mã = 1 nơi" (giải thích ngắn)
 
-- Mỗi máy khi kích hoạt sinh ra một `token` ngẫu nhiên và ghi vào `session` của mã.
-- Máy nào có `token` trùng `session` mới được vào. Kích hoạt ở máy mới ghi đè `session`
-  → máy cũ lần kiểm tra kế tiếp thấy lệch → bị đăng xuất, hiện nút "Dùng ở máy này".
-- Hạn dùng so theo **giờ máy chủ** (không phải giờ máy khách) nên khách chỉnh đồng hồ vô ích.
+- Mỗi máy khi kích hoạt sinh ra một `token` ngẫu nhiên, ghi vào trường `deviceId` của mã.
+- Chỉ máy có `token` trùng `deviceId` mới được vào. Kích hoạt ở máy mới ghi đè `deviceId`
+  → máy cũ (khoảng 30 giây sau) thấy lệch → bị đăng xuất, hiện nút **"Dùng ở máy này"**.
+- **Hạn dùng tính từ lúc kích hoạt lần đầu** (mã để trong kho không bị trừ ngày).
+- Hạn so theo **giờ máy chủ**, nên khách chỉnh đồng hồ máy vô ích.
 
-## Cấu trúc một bản ghi mã (tham khảo)
+## Một bản ghi mã trông như thế nào (tham khảo)
 
 ```json
 {
-  "plan": "1 tháng",
-  "durationDays": 30,
+  "customerName": "Anh Quân",
+  "durationMs": 2592000000,   // 30 ngày (-1 = vĩnh viễn)
   "createdAt": 1723456789000,
-  "expiresAt": 1726048789000,
-  "disabled": false,
-  "session": null,
-  "sessionAt": 0
+  "deviceId": null,           // token máy đang giữ phiên (null = chưa kích hoạt)
+  "deviceAt": 0,
+  "expiresAt": null           // chốt khi kích hoạt lần đầu = lúc kích hoạt + durationMs
 }
 ```
 
-- `durationDays`: 30 / 90 / 365 / 0 (0 = vĩnh viễn).
-- `expiresAt`: mốc hết hạn (ms). `0` = không bao giờ hết. **Chốt ngay lúc tạo mã.**
-- `disabled`: `true` = đã khoá.
+---
 
-> ⚠️ `admin.html` là công cụ nội bộ có quyền quản trị. Chỉ mở trên máy bạn, đừng deploy,
-> đừng chia sẻ file này hay Database Secret cho bất kỳ ai. File chỉ dùng ở máy nên
-> **không** bị đóng gói khi build app (`npm run build` chỉ build `index.html`).
+> ⚠️ **Lưu ý bảo mật (thành thật):** để cho đơn giản, Firebase đang để mở — nghĩa là người
+> rành kỹ thuật, nếu biết đường link database, có thể xem hoặc sửa mã. Bán cho khách thường
+> thì hoàn toàn ổn (giống hệt cách công cụ cũ của bạn đang chạy). Nếu sau này cần khoá chặt
+> hơn (bắt đăng nhập admin, chặn xem trộm), nhắn tôi làm bản nâng cấp.
+>
+> `admin.html` là công cụ nội bộ — chỉ mở trên máy bạn, đừng đưa lên web, đừng chia sẻ file.
+> Khi build app (`npm run build`) file này **không** bị đóng gói nên khách không thấy được.
