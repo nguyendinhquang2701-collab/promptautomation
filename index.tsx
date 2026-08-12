@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import LicenseGate from './components/LicenseGate';
 import './index.css'; // Dòng cũ của bạn giữ nguyên
 
 const rootElement = document.getElementById('root');
@@ -11,6 +12,8 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <LicenseGate>
+      <App />
+    </LicenseGate>
   </React.StrictMode>
 );

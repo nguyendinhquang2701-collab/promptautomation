@@ -222,6 +222,18 @@ export const updateUsageStats = (updates: { input?: number; output?: number; cac
 
 const keyIndexes: Record<string, number> = {};
 
+// Đua promise với đồng hồ timeout — hết giờ ném AbortError để vòng retry xử lý.
+// (SDK Gemini không có timeout; request treo sẽ kẹt cả kịch bản nếu không có lớp này.)
+const raceWithTimeout = async <T>(p: Promise<T>, ms: number): Promise<T> => {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => { t = setTimeout(() => { const e: any = new Error('timeout'); e.name = 'AbortError'; reject(e); }, ms); })
+    ]);
+  } finally { clearTimeout(t); }
+};
+
 const callGeminiSafe = async <T>(contents: any, systemInstruction: string | undefined, schema: any, model: string, temperature = 0.5, limiter = limitSceneConcurrency, forcedProviderId: string): Promise<T> => {
   const providerConfig = AI_PROVIDERS[forcedProviderId];
   const executeCall = async () => {
@@ -235,7 +247,7 @@ const callGeminiSafe = async <T>(contents: any, systemInstruction: string | unde
       safetySettings: [{ category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }]
     };
     if (systemInstruction) configData.systemInstruction = systemInstruction;
-    const response = await ai.models.generateContent({ model, contents, config: configData });
+    const response = await raceWithTimeout(ai.models.generateContent({ model, contents, config: configData }), 120000);
     if (response.usageMetadata) updateUsageStats({ input: response.usageMetadata.promptTokenCount, cached: response.usageMetadata.cachedContentTokenCount, output: response.usageMetadata.candidatesTokenCount, calls: 1 });
     return JSON.parse(sanitizeJSONString(response.text || "[]")) as T;
   };
@@ -246,6 +258,10 @@ const callGeminiSafe = async <T>(contents: any, systemInstruction: string | unde
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try { return await limiter(executeCall); }
     catch(error: any) {
+      if (error?.name === 'AbortError') {
+         if (attempt < maxRetries) { await delay(500 + Math.random() * 700); continue; }
+         throw new Error(`API ${providerConfig.name} phản hồi quá lâu (timeout 120s) — server đang quá tải, hãy thử lại.`);
+      }
       const status = error?.status || error?.code;
       if (status === 429) {
          const currentKeys = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
@@ -316,19 +332,19 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
     const cleanBaseUrl = (providerConfig.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
     const targetUrl = `${cleanBaseUrl}/chat/completions`;
     
-    // (Sửa hiệu năng) TIMEOUT 90s: fetch không có timeout mặc định → 1 request treo có thể
-    // kẹt cả kịch bản. AbortController cắt sau 90s để vòng retry xử lý. max_tokens chặn model
-    // sinh phản hồi dài lê thê (nguồn chậm với provider OpenAI-compatible).
+    // (Sửa hiệu năng) TIMEOUT 120s cho TOÀN BỘ request — kể cả lúc ĐỌC BODY. Trước đây
+    // clearTimeout chạy ngay khi fetch nhận headers, còn response.json() (đọc body) KHÔNG
+    // có timeout: DeepSeek/API quá tải giữ kết nối và nhỏ giọt body → treo vô hạn, phân
+    // đoạn sau đứng im. Giờ đồng hồ chỉ tắt sau khi parse xong; abort giữa chừng → retry.
     // 👉 DEEPSEEK V4: model deepseek-v4-flash MẶC ĐỊNH BẬT thinking mode (deepseek-chat cũ
     // là chế độ non-thinking). Thinking ngốn token suy nghĩ trước khi ra JSON → output lớn
     // (Bước 2/3) bị cụt/rỗng ("mạng hụt") và cực chậm. Tắt bằng thinking:{type:"disabled"}
     // (KHÔNG dùng reasoning_effort:"none" — DeepSeek trả 400). Chỉ gửi cho host DeepSeek.
     const isDeepSeekHost = /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 90000);
-    let response: Response;
+    const timer = setTimeout(() => controller.abort(), 120000);
     try {
-      response = await fetch(targetUrl, {
+      const response = await fetch(targetUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -343,30 +359,30 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
         }),
         signal: controller.signal
       });
+
+      if (!response.ok) {
+          const textBody = await response.text();
+          let errStr = textBody;
+          try {
+              const errObj = JSON.parse(textBody);
+              errStr = errObj.error?.message || JSON.stringify(errObj);
+          } catch(e) {}
+          throw { status: response.status, details: errStr };
+      }
+
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content || "[]";
+      let parsed = JSON.parse(sanitizeJSONString(text));
+
+      if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
+          const arrayValues = Object.values(parsed).find(v => Array.isArray(v));
+          parsed = arrayValues ? arrayValues : [];
+      }
+
+      return parsed as T;
     } finally {
       clearTimeout(timer);
     }
-
-    if (!response.ok) {
-        const textBody = await response.text(); 
-        let errStr = textBody;
-        try {
-            const errObj = JSON.parse(textBody);
-            errStr = errObj.error?.message || JSON.stringify(errObj);
-        } catch(e) {}
-        throw { status: response.status, details: errStr };
-    }
-
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || "[]";
-    let parsed = JSON.parse(sanitizeJSONString(text));
-
-    if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
-        const arrayValues = Object.values(parsed).find(v => Array.isArray(v));
-        parsed = arrayValues ? arrayValues : [];
-    }
-
-    return parsed as T;
   };
   
   const initialKeysLen = Math.max(1, JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]').length);
@@ -379,7 +395,7 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
       // Request bị cắt do timeout 90s → thử lại (nếu còn lượt) thay vì kẹt.
       if (error?.name === 'AbortError') {
           if (attempt < maxRetries) { await delay(500 + Math.random() * 700); continue; }
-          throw new Error(`API ${providerConfig.name} phản hồi quá lâu (timeout 90s).`);
+          throw new Error(`API ${providerConfig.name} phản hồi quá lâu (timeout 120s) — server đang quá tải, hãy thử lại.`);
       }
       if (error instanceof TypeError && error.message === 'Failed to fetch') {
           throw new Error(`Bị TRÌNH DUYỆT chặn kết nối (Lỗi CORS). Hãy kiểm tra lại link API hoặc bật tiện ích Allow CORS trên trình duyệt.`);

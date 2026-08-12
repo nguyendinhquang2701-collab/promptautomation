@@ -18,15 +18,28 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
 
   const activeProjects = projects.filter(p => p.scenes.length > 0);
 
+  // 👉 Số thứ tự CHẠY TOÀN CỤC (1,2,3...) theo đúng thứ tự prompt trong các phân đoạn
+  // đã xong — dùng chung cho copy đơn, copy tất cả, tải về và badge trên card.
+  const positionByKey = new Map<string, number>();
+  let __pos = 0;
+  activeProjects.filter(p => p.promptStatus === 'success').forEach(p =>
+    p.promptItems.forEach(item => positionByKey.set(`${p.id}-${item.sceneId}`, ++__pos))
+  );
+
   const handleCopySingle = async (text: string, id: string) => {
     try { await navigator.clipboard.writeText(text); setCopiedId(id); setTimeout(() => setCopiedId(null), 2000); } 
     catch (err) { console.error('Failed to copy', err); }
   };
 
+  // 👉 Xuất hàng loạt: đánh số chạy 1. 2. 3.... theo ĐÚNG thứ tự vị trí của prompt.
+  // (Nút copy TỪNG prompt vẫn giữ JSON trần, không số, để dán thẳng vào Veo.)
+  const numberedPrompts = (items: { generatedPrompt: string }[]) =>
+    items.map((item, i) => `${i + 1}. ${item.generatedPrompt}`).join('\n\n');
+
   const handleCopyAll = async () => {
     try {
-      const allText = activeProjects.filter(p => p.promptStatus === 'success').flatMap(p => p.promptItems.map(item => item.generatedPrompt)).join('\n\n');
-      await navigator.clipboard.writeText(allText); setAllCopied(true); setTimeout(() => setAllCopied(false), 2000);
+      const allItems = activeProjects.filter(p => p.promptStatus === 'success').flatMap(p => p.promptItems);
+      await navigator.clipboard.writeText(numberedPrompts(allItems)); setAllCopied(true); setTimeout(() => setAllCopied(false), 2000);
     } catch (err) { console.error('Failed to copy all', err); }
   };
 
@@ -34,8 +47,8 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
     const allItems = activeProjects.filter(p => p.promptStatus === 'success').flatMap(p => p.promptItems);
     if (allItems.length === 0) return;
     let content = '', fileName = '';
-    if (type === 'script') { content = allItems.map(item => item.sourceText).join('\n\n'); fileName = `KichBan_Goc_${new Date().toISOString().slice(0,10)}.txt`; } 
-    else { content = allItems.map(item => item.generatedPrompt).join('\n\n'); fileName = `Prompt_Veo3_${new Date().toISOString().slice(0,10)}.txt`; }
+    if (type === 'script') { content = allItems.map((item, i) => `${i + 1}. ${item.sourceText}`).join('\n\n'); fileName = `KichBan_Goc_${new Date().toISOString().slice(0,10)}.txt`; }
+    else { content = numberedPrompts(allItems); fileName = `Prompt_Veo3_${new Date().toISOString().slice(0,10)}.txt`; }
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
@@ -134,13 +147,14 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
                   {project.promptItems.map((item) => (
                     <div key={`${project.id}-${item.sceneId}`} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 hover:border-indigo-500/30 transition-all group relative shadow-xl">
                       <div className="absolute top-5 right-5">
-                        <button onClick={() => handleCopySingle(item.generatedPrompt, `${project.id}-${item.sceneId}`)} className={`p-2 rounded-lg transition-all ${copiedId === `${project.id}-${item.sceneId}` ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Copy Prompt">
+                        <button onClick={() => { const n = positionByKey.get(`${project.id}-${item.sceneId}`); handleCopySingle(n ? `${n}. ${item.generatedPrompt}` : item.generatedPrompt, `${project.id}-${item.sceneId}`); }} className={`p-2 rounded-lg transition-all ${copiedId === `${project.id}-${item.sceneId}` ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Copy Prompt (kèm số thứ tự)">
                           {copiedId === `${project.id}-${item.sceneId}` ? (<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path fillRule="evenodd" d="M19.916 4.626a.75.75 0 01.208 1.04l-9 13.5a.75.75 0 01-1.154.114l-6-6a.75.75 0 011.06-1.06l5.353 5.353 8.493-12.739a.75.75 0 011.04-.208z" clipRule="evenodd" /></svg>) : (<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0016.5 9h-1.875a1.875 1.875 0 01-1.875-1.875V5.25A3.75 3.75 0 009 1.5H5.625z" /><path d="M12.971 1.816A5.23 5.23 0 0114.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 013.434 1.279 9.768 9.768 0 00-6.963-6.963z" /></svg>)}
                         </button>
                       </div>
 
                       <div className="pr-12">
                         <div className="flex items-center gap-3 mb-3">
+                          <span className="bg-amber-500/15 text-amber-400 text-xs font-black px-2 py-1 rounded tracking-wider">#{positionByKey.get(`${project.id}-${item.sceneId}`) ?? '-'}</span>
                           <span className="bg-indigo-500/10 text-indigo-400 text-xs font-bold px-2 py-1 rounded uppercase tracking-wider">Cảnh {item.sceneId}</span>
                         </div>
                         

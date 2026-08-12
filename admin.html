@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow">
+    <title>Trạm Cấp Key — Veo 3</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        @keyframes fade-in-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+    </style>
+</head>
+<body class="bg-slate-950 text-white flex items-center justify-center min-h-screen p-4 selection:bg-indigo-500">
+
+<!-- ====== MÀN QUẢN TRỊ ====== -->
+<div id="admin-screen" class="max-w-5xl w-full" style="animation: fade-in-up 0.5s ease-out;">
+
+    <div class="flex items-center justify-between mb-6 px-1">
+        <div>
+            <h1 class="text-2xl font-black">🔑 Trạm cấp key Veo 3</h1>
+            <p class="text-xs text-slate-500 mt-1">Tạo mã bán cho khách — mỗi mã dùng 1 nơi/lúc, hạn tính từ lúc khách kích hoạt.</p>
+        </div>
+        <button onclick="loadKeys()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold px-4 py-2 rounded-xl transition-all">↻ Làm mới</button>
+    </div>
+
+    <!-- Cấp phát -->
+    <div class="bg-slate-900 border border-slate-800 p-6 rounded-3xl shadow-2xl mb-6">
+        <h3 class="text-sm font-bold text-emerald-400 mb-4 flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5"><path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" /></svg>
+            Cấp phát bản quyền mới
+        </h3>
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+            <div class="md:col-span-4">
+                <label class="text-[10px] uppercase tracking-widest text-slate-400 font-bold block mb-1.5">Tên khách hàng</label>
+                <input type="text" id="customerName" placeholder="VD: Anh Quân, Chị Linh..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 outline-none text-sm focus:border-indigo-500 transition-all text-amber-400 font-medium">
+            </div>
+            <div class="md:col-span-2">
+                <label class="text-[10px] uppercase tracking-widest text-slate-400 font-bold block mb-1.5">Tiền tố</label>
+                <input type="text" id="prefix" value="PRO" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 uppercase font-mono text-sm focus:border-indigo-500 outline-none transition-all">
+            </div>
+            <div class="md:col-span-3">
+                <label class="text-[10px] uppercase tracking-widest text-slate-400 font-bold block mb-1.5">Thời hạn</label>
+                <select id="duration" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 outline-none text-sm focus:border-indigo-500 cursor-pointer transition-all">
+                    <option value="3600000">1 Giờ (Dùng thử)</option>
+                    <option value="604800000">7 Ngày</option>
+                    <option value="2592000000" selected>1 Tháng (30 Ngày)</option>
+                    <option value="7776000000">3 Tháng (90 Ngày)</option>
+                    <option value="31536000000">1 Năm (365 Ngày)</option>
+                    <option value="-1">Vĩnh viễn (Trọn đời)</option>
+                </select>
+            </div>
+            <div class="md:col-span-2">
+                <label class="text-[10px] uppercase tracking-widest text-slate-400 font-bold block mb-1.5">Số lượng</label>
+                <input type="number" id="qty" value="1" min="1" max="200" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 outline-none text-sm focus:border-indigo-500 transition-all">
+            </div>
+            <div class="md:col-span-1">
+                <button onclick="generateKeys()" class="w-full bg-emerald-600 hover:bg-emerald-500 py-3 rounded-xl font-bold shadow-lg shadow-emerald-500/20 transition-all text-sm h-[46px]">Tạo</button>
+            </div>
+        </div>
+        <p id="genMsg" class="text-xs mt-3 h-4"></p>
+    </div>
+
+    <!-- Bảng key -->
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl shadow-xl overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm whitespace-nowrap">
+                <thead class="bg-slate-950 text-slate-400 text-[10px] uppercase tracking-widest">
+                    <tr>
+                        <th class="px-6 py-4 font-bold">Khách hàng</th>
+                        <th class="px-6 py-4 font-bold">License Key</th>
+                        <th class="px-6 py-4 font-bold">Trạng thái</th>
+                        <th class="px-6 py-4 font-bold">Hạn dùng</th>
+                        <th class="px-6 py-4 font-bold text-right">Quản lý</th>
+                    </tr>
+                </thead>
+                <tbody id="key-list" class="divide-y divide-slate-800/50"></tbody>
+            </table>
+        </div>
+    </div>
+    <p class="text-center text-[11px] text-slate-600 mt-4">Tổng: <span id="countLabel">0</span> mã</p>
+</div>
+
+<script>
+    // ============================================================
+    const DB_URL = "https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app/veo3_licenses";
+    // ============================================================
+
+    const ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ'; // bỏ 0 1 O I L U cho dễ đọc
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    function randBody(n) {
+        const a = new Uint32Array(n); crypto.getRandomValues(a);
+        let s = ''; for (let i = 0; i < n; i++) s += ALPHABET[a[i] % ALPHABET.length];
+        return s;
+    }
+    function fmtDate(ms) {
+        if (!ms) return '';
+        const d = new Date(ms);
+        return d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
+    }
+
+    async function loadKeys() {
+        const tbody = $('key-list');
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-slate-500">Đang tải dữ liệu...</td></tr>';
+        try {
+            const res = await fetch(`${DB_URL}.json`);
+            const data = (await res.json()) || {};
+            const entries = Object.entries(data).sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
+            $('countLabel').textContent = entries.length;
+
+            if (entries.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-slate-500 italic">Chưa có mã nào. Hãy tạo mã đầu tiên ở trên.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = entries.map(([key, info]) => {
+                const permanent = info.durationMs === -1;
+                const activated = !!info.deviceId || typeof info.expiresAt === 'number';
+                const expired = activated && !permanent && typeof info.expiresAt === 'number' && Date.now() > info.expiresAt;
+
+                let status;
+                if (expired) status = '<span class="bg-red-500/10 border border-red-500/20 text-red-400 px-3 py-1 rounded-full text-[10px] font-bold">Hết hạn</span>';
+                else if (info.deviceId) status = '<span class="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-3 py-1 rounded-full text-[10px] font-bold"><span class="inline-block w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-1"></span>Đang chạy</span>';
+                else status = '<span class="bg-slate-800 border border-slate-700 text-slate-400 px-3 py-1 rounded-full text-[10px] font-bold">Tồn kho</span>';
+
+                let timeStr;
+                if (permanent) timeStr = '<span class="text-fuchsia-400 font-bold tracking-widest text-xs">∞ VĨNH VIỄN</span>';
+                else if (typeof info.expiresAt === 'number') timeStr = fmtDate(info.expiresAt);
+                else timeStr = `<span class="text-slate-500">Gói ${Math.round((info.durationMs || 0) / 86400000)} ngày (chưa kích hoạt)</span>`;
+
+                const customer = info.customerName ? esc(info.customerName) : '<span class="text-slate-600 italic">Khách lẻ</span>';
+                const dev = info.deviceId ? `<p class="text-[10px] text-slate-500 mt-1">máy: ${esc(String(info.deviceId).slice(0,10))}…</p>` : '';
+
+                return `
+                <tr class="hover:bg-slate-800/30 transition-colors">
+                    <td class="px-6 py-4 font-medium text-amber-400 text-sm">${customer}</td>
+                    <td class="px-6 py-4">
+                        <span class="font-mono text-indigo-300 font-bold cursor-pointer" title="Bấm để copy" onclick="copyKey('${esc(key)}')">${esc(key)}</span>${dev}
+                    </td>
+                    <td class="px-6 py-4">${status}</td>
+                    <td class="px-6 py-4 text-slate-300">${timeStr}</td>
+                    <td class="px-6 py-4 text-right space-x-1">
+                        <button onclick="copyKey('${esc(key)}')" class="text-indigo-400 hover:text-white hover:bg-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold transition-all">Copy</button>
+                        ${info.deviceId ? `<button onclick="kickDevice('${esc(key)}')" class="text-amber-400 hover:text-white hover:bg-amber-600 px-3 py-1.5 rounded-lg text-xs font-bold transition-all">Đá máy</button>` : ''}
+                        <button onclick="deleteKey('${esc(key)}')" class="text-red-500 hover:text-white hover:bg-red-500 px-3 py-1.5 rounded-lg text-xs font-bold transition-all">Thu hồi</button>
+                    </td>
+                </tr>`;
+            }).join('');
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-red-400">Lỗi kết nối mạng!</td></tr>';
+        }
+    }
+
+    async function generateKeys() {
+        const customerName = $('customerName').value.trim();
+        const prefix = $('prefix').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const durationMs = parseInt($('duration').value);
+        const qty = Math.max(1, Math.min(200, parseInt($('qty').value) || 1));
+        if (!prefix) { $('genMsg').innerHTML = '<span class="text-red-400">Cần nhập tiền tố.</span>'; return; }
+
+        $('genMsg').innerHTML = '<span class="text-slate-400">Đang tạo...</span>';
+        const created = [];
+        let ok = 0, fail = 0;
+        for (let i = 0; i < qty; i++) {
+            const key = `${prefix}-${randBody(6)}`;
+            const record = { customerName, durationMs, createdAt: Date.now(), deviceId: null, deviceAt: 0, expiresAt: null };
+            try {
+                const r = await fetch(`${DB_URL}/${encodeURIComponent(key)}.json`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record)
+                });
+                if (r.ok) { ok++; created.push(key); } else fail++;
+            } catch (e) { fail++; }
+        }
+        $('customerName').value = '';
+        if (created.length) {
+            navigator.clipboard?.writeText(created.join('\n')).catch(() => {});
+            $('genMsg').innerHTML = `<span class="text-emerald-400">✓ Đã tạo ${ok} mã${fail ? (', lỗi ' + fail) : ''} — đã copy vào clipboard.</span>`;
+        } else {
+            $('genMsg').innerHTML = `<span class="text-red-400">Không tạo được mã (kiểm tra mạng).</span>`;
+        }
+        loadKeys();
+    }
+
+    function copyKey(key) {
+        navigator.clipboard?.writeText(key);
+        $('genMsg').innerHTML = `<span class="text-emerald-400">✓ Đã copy: ${esc(key)}</span>`;
+        setTimeout(() => { $('genMsg').innerHTML = ''; }, 1500);
+    }
+
+    async function kickDevice(key) {
+        if (!confirm(`Đá thiết bị đang dùng mã ${key}?\n(Khách sẽ phải kích hoạt lại — dùng khi cần chuyển máy cho khách.)`)) return;
+        try {
+            await fetch(`${DB_URL}/${encodeURIComponent(key)}.json`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: null })
+            });
+            loadKeys();
+        } catch (e) { alert('Lỗi mạng.'); }
+    }
+
+    async function deleteKey(key) {
+        if (!confirm(`Thu hồi VĨNH VIỄN mã:\n[ ${key} ] ?`)) return;
+        try {
+            await fetch(`${DB_URL}/${encodeURIComponent(key)}.json`, { method: 'DELETE' });
+            loadKeys();
+        } catch (e) { alert('Lỗi mạng.'); }
+    }
+
+    // Mở file là vào thẳng, tải danh sách mã ngay.
+    loadKeys();
+</script>
+</body>
+</html>
