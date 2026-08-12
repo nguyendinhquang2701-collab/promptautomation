@@ -47,7 +47,7 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
     const allItems = activeProjects.filter(p => p.promptStatus === 'success').flatMap(p => p.promptItems);
     if (allItems.length === 0) return;
     let content = '', fileName = '';
-    if (type === 'script') { content = allItems.map((item, i) => `${i + 1}. ${item.sourceText}`).join('\n\n'); fileName = `KichBan_Goc_${new Date().toISOString().slice(0,10)}.txt`; }
+    if (type === 'script') { content = allItems.map(item => item.sourceText).join('\n\n'); fileName = `KichBan_Goc_${new Date().toISOString().slice(0,10)}.txt`; }
     else { content = numberedPrompts(allItems); fileName = `Prompt_Veo3_${new Date().toISOString().slice(0,10)}.txt`; }
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
