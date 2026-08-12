@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<title>Quản lý mã kích hoạt — CÔNG CỤ NỘI BỘ</title>
+<style>
+  :root{--bg:#0b1220;--card:#111a2e;--line:#243049;--ink:#e5edff;--mut:#8fa3c8;--acc:#7c3aed;--ok:#22c55e;--warn:#f59e0b;--err:#f87171}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(135deg,#0f172a,#1e293b);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:24px}
+  h1{font-size:22px;margin:0 0 4px} .sub{color:var(--mut);font-size:13px;margin:0 0 20px}
+  .warn-banner{background:#3b1d1d;border:1px solid #7f1d1d;color:#fecaca;padding:10px 14px;border-radius:10px;font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:18px;max-width:900px}
+  h2{font-size:16px;margin:0 0 14px}
+  label{display:block;font-size:12px;color:var(--mut);margin:12px 0 5px}
+  input,select{width:100%;padding:10px 12px;background:#0a1122;border:1px solid var(--line);border-radius:9px;color:var(--ink);font-size:14px;outline:none}
+  .row{display:flex;gap:12px;flex-wrap:wrap} .row>div{flex:1;min-width:150px}
+  .plans{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .plans button{flex:1;min-width:100px;padding:10px;border:1px solid var(--line);background:#0a1122;color:var(--ink);border-radius:9px;cursor:pointer;font-size:13px}
+  .plans button.on{border-color:var(--acc);background:#20164a;color:#fff;font-weight:700}
+  button.act{margin-top:16px;padding:11px 18px;border:none;border-radius:9px;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;font-weight:700;font-size:14px;cursor:pointer}
+  button.sec{padding:8px 12px;border:1px solid var(--line);background:#0a1122;color:var(--ink);border-radius:8px;cursor:pointer;font-size:13px}
+  table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px}
+  th,td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;letter-spacing:1px}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+  textarea{width:100%;height:120px;background:#0a1122;border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:10px;font-family:ui-monospace,monospace;font-size:12px}
+  .msg{font-size:13px;margin-top:10px} .ok{color:var(--ok)} .err{color:var(--err)} .mut{color:var(--mut)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+  .pill.g{background:#14351f;color:#86efac}.pill.r{background:#3b1d1d;color:#fca5a5}
+</style>
+</head>
+<body>
+  <h1>🔑 Quản lý mã kích hoạt</h1>
+  <p class="sub">Công cụ NỘI BỘ — mở bằng file trên máy bạn, KHÔNG đưa lên web, không chia sẻ.</p>
+  <div class="warn-banner">⚠️ File này chứa quyền quản trị. Chỉ mở trên máy bạn (nhấp đúp mở bằng trình duyệt). Đừng deploy, đừng gửi cho ai.</div>
+
+  <!-- CẤU HÌNH -->
+  <div class="card">
+    <h2>⚙️ Kết nối Firebase</h2>
+    <label>Firebase Database URL</label>
+    <input id="dbUrl" value="https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app" />
+    <label>Database Secret (chỉ cần khi Ghi thẳng / Quản lý — lấy ở Firebase Console → Project settings → Service accounts → Database secrets)</label>
+    <input id="secret" type="password" placeholder="Dán secret vào đây (để trống nếu chỉ tạo mã rồi tự dán vào Console)" />
+    <p class="msg mut">Secret chỉ nằm trong trình duyệt của bạn, không lưu ở đâu khác.</p>
+  </div>
+
+  <!-- TẠO MÃ -->
+  <div class="card">
+    <h2>➕ Tạo mã mới</h2>
+    <div class="row">
+      <div>
+        <label>Gói hạn dùng</label>
+        <div class="plans" id="plans"></div>
+      </div>
+      <div>
+        <label>Số lượng</label>
+        <input id="qty" type="number" min="1" max="500" value="1" />
+      </div>
+    </div>
+    <button class="act" id="genBtn">Tạo mã</button>
+    <div id="genOut"></div>
+  </div>
+
+  <!-- QUẢN LÝ 1 MÃ -->
+  <div class="card">
+    <h2>🛠️ Quản lý một mã</h2>
+    <label>Mã cần kiểm tra</label>
+    <input id="mCode" placeholder="XXXX-XXXX-XXXX" />
+    <button class="sec" id="mLookup" style="margin-top:12px">Tra cứu</button>
+    <div id="mOut" class="msg"></div>
+  </div>
+
+<script>
+const ALPHABET='23456789ABCDEFGHJKMNPQRSTVWXYZ';
+const PLANS=[{label:'1 tháng',days:30},{label:'3 tháng',days:90},{label:'1 năm',days:365},{label:'Vĩnh viễn',days:0}];
+let selPlan=PLANS[0];
+
+const $=id=>document.getElementById(id);
+const norm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+const disp=s=>norm(s).replace(/(.{4})(?=.)/g,'$1-');
+function genCode(){const a=new Uint32Array(12);crypto.getRandomValues(a);let s='';for(let i=0;i<12;i++)s+=ALPHABET[a[i]%ALPHABET.length];return s;}
+function fmtDate(ms){if(!ms)return 'Vĩnh viễn';const d=new Date(ms);return d.toLocaleDateString('vi-VN')+' '+d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'});}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function base(){return $('dbUrl').value.trim().replace(/\/$/,'');}
+function authQ(){const s=$('secret').value.trim();return s?('?auth='+encodeURIComponent(s)):'';}
+function recUrl(code){return base()+'/veo3_licenses/'+encodeURIComponent(code)+'.json'+authQ();}
+
+// ---- chọn gói ----
+const plansEl=$('plans');
+PLANS.forEach((p,i)=>{const b=document.createElement('button');b.textContent=p.label;if(i===0)b.classList.add('on');
+  b.onclick=()=>{selPlan=p;[...plansEl.children].forEach(c=>c.classList.remove('on'));b.classList.add('on');};plansEl.appendChild(b);});
+
+// ---- tạo mã ----
+let lastBatch=[];
+$('genBtn').onclick=()=>{
+  const qty=Math.max(1,Math.min(500,parseInt($('qty').value)||1));
+  const now=Date.now();
+  lastBatch=[];
+  for(let i=0;i<qty;i++){
+    const code=genCode();
+    const expiresAt=selPlan.days===0?0:now+selPlan.days*86400000;
+    lastBatch.push({code,record:{plan:selPlan.label,durationDays:selPlan.days,createdAt:now,expiresAt,disabled:false,session:null,sessionAt:0}});
+  }
+  renderBatch();
+};
+
+function renderBatch(){
+  const combined={}; lastBatch.forEach(x=>combined[x.code]=x.record);
+  let rows=lastBatch.map(x=>`<tr><td><code>${disp(x.code)}</code></td><td>${x.record.plan}</td><td>${fmtDate(x.record.expiresAt)}</td></tr>`).join('');
+  const codesText=lastBatch.map(x=>disp(x.code)).join('\n');
+  $('genOut').innerHTML=`
+    <table><thead><tr><th>Mã (gửi khách)</th><th>Gói</th><th>Hết hạn</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="row" style="margin-top:12px">
+      <button class="sec" id="copyCodes">📋 Copy danh sách mã</button>
+      <button class="sec" id="copyJson">📋 Copy JSON (import vào Console)</button>
+      <button class="act" id="writeFb" style="margin-top:0">⬆️ Ghi thẳng lên Firebase (cần secret)</button>
+    </div>
+    <label style="margin-top:14px">JSON để dán vào Firebase Console (node <span class="mono">veo3_licenses</span>)</label>
+    <textarea id="jsonBox" readonly>${JSON.stringify(combined,null,2)}</textarea>
+    <div id="writeMsg" class="msg"></div>`;
+  $('copyCodes').onclick=()=>{navigator.clipboard.writeText(codesText);flash('copyCodes','Đã copy!');};
+  $('copyJson').onclick=()=>{navigator.clipboard.writeText(JSON.stringify(combined,null,2));flash('copyJson','Đã copy!');};
+  $('writeFb').onclick=writeBatch;
+}
+function flash(id,t){const b=$(id);const o=b.textContent;b.textContent=t;setTimeout(()=>b.textContent=o,1200);}
+
+async function writeBatch(){
+  if(!$('secret').value.trim()){$('writeMsg').innerHTML='<span class="err">Cần nhập Database Secret ở phần trên để ghi thẳng.</span>';return;}
+  $('writeMsg').textContent='Đang ghi…';let ok=0,fail=0;
+  for(const x of lastBatch){
+    try{const r=await fetch(recUrl(x.code),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(x.record)});
+      if(r.ok)ok++;else fail++;}catch(e){fail++;}
+  }
+  $('writeMsg').innerHTML=`<span class="${fail?'err':'ok'}">Đã ghi ${ok}/${lastBatch.length} mã${fail?(', lỗi '+fail):''}.</span>`;
+}
+
+// ---- quản lý 1 mã ----
+$('mLookup').onclick=async()=>{
+  const code=norm($('mCode').value);
+  if(code.length!==12){$('mOut').innerHTML='<span class="err">Mã phải 12 ký tự.</span>';return;}
+  $('mOut').textContent='Đang tra…';
+  let rec;try{const r=await fetch(recUrl(code));if(!r.ok)throw 0;rec=await r.json();}catch(e){$('mOut').innerHTML='<span class="err">Không đọc được (kiểm tra URL/secret/mạng).</span>';return;}
+  if(!rec){$('mOut').innerHTML='<span class="err">Mã không tồn tại.</span>';return;}
+  const now=Date.now();
+  const expd=rec.expiresAt&&rec.expiresAt>0&&now>rec.expiresAt;
+  $('mOut').innerHTML=`
+    <table><tbody>
+      <tr><th>Gói</th><td>${esc(rec.plan||'-')} (${Number(rec.durationDays)===0?'vĩnh viễn':esc(rec.durationDays)+' ngày'})</td></tr>
+      <tr><th>Tạo lúc</th><td>${fmtDate(rec.createdAt)}</td></tr>
+      <tr><th>Hết hạn</th><td>${fmtDate(rec.expiresAt)} ${expd?'<span class="pill r">ĐÃ HẾT HẠN</span>':'<span class="pill g">CÒN HẠN</span>'}</td></tr>
+      <tr><th>Trạng thái</th><td>${rec.disabled?'<span class="pill r">ĐANG KHOÁ</span>':'<span class="pill g">HOẠT ĐỘNG</span>'}</td></tr>
+      <tr><th>Phiên</th><td class="mono">${rec.session?('đang dùng ('+esc(String(rec.session).slice(0,8))+'…) '+fmtDate(rec.sessionAt)):'trống'}</td></tr>
+    </tbody></table>
+    <div class="row" style="margin-top:12px">
+      ${rec.disabled?'<button class="sec" data-a="unlock">🔓 Mở khoá</button>':'<button class="sec" data-a="lock">🔒 Khoá mã</button>'}
+      <button class="sec" data-a="kick">📴 Đá thiết bị (bắt đăng nhập lại)</button>
+      <button class="sec" data-a="extend">➕ Gia hạn thêm 30 ngày</button>
+      <button class="sec" data-a="delete" style="color:#fca5a5">🗑️ Xoá mã</button>
+    </div><div id="mAct" class="msg"></div>`;
+  $('mOut').querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>doAdmin(code,b.dataset.a,rec));
+};
+
+async function doAdmin(code,action,rec){
+  if(!$('secret').value.trim()){$('mAct').innerHTML='<span class="err">Cần Database Secret để thao tác.</span>';return;}
+  let method='PATCH',body=null;
+  if(action==='lock')body={disabled:true};
+  else if(action==='unlock')body={disabled:false};
+  else if(action==='kick')body={session:null};
+  else if(action==='extend'){const b=(rec.expiresAt&&rec.expiresAt>0)?rec.expiresAt:Date.now();body={expiresAt:b+30*86400000};}
+  else if(action==='delete'){if(!confirm('Xoá vĩnh viễn mã '+disp(code)+'?'))return;method='DELETE';}
+  $('mAct').textContent='Đang xử lý…';
+  try{const r=await fetch(recUrl(code),{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    $('mAct').innerHTML='<span class="ok">Xong. Nhấn "Tra cứu" lại để xem trạng thái mới.</span>';
+  }catch(e){$('mAct').innerHTML='<span class="err">Lỗi: '+e.message+' (secret sai hoặc chưa mở quyền).</span>';}
+}
+</script>
+</body>
+</html>
