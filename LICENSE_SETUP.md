@@ -10,10 +10,7 @@ và **chỉ đăng nhập được ở một nơi cùng lúc** — khách kích 
 ## Tạo mã để bán (chỉ 3 bước)
 
 1. Mở file **`admin.html`** — nhấp đúp, nó mở ngay bằng Chrome (chạy trên máy bạn, không cần đưa lên web).
-2. Nhập **mật khẩu** → bấm **Truy Cập**.
-   > Mật khẩu mặc định là `veo3`. Đổi bằng cách mở `admin.html` bằng Notepad, tìm dòng
-   > `const ADMIN_PASSWORD = "veo3";` ở đầu phần script và sửa thành mật khẩu của bạn.
-3. Điền **Tên khách hàng** (tuỳ chọn), chọn **Thời hạn**, **Số lượng** → bấm **Tạo**.
+2. Điền **Tên khách hàng** (tuỳ chọn), chọn **Thời hạn**, **Số lượng** → bấm **Tạo**.
    Mã hiện ngay trong bảng và **tự copy vào clipboard**. Gửi mã cho khách là xong.
 
 Khách dán mã vào app (màn hình "Nhập mã kích hoạt") là dùng được.

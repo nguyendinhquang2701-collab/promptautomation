@@ -15,19 +15,8 @@
 </head>
 <body class="bg-slate-950 text-white flex items-center justify-center min-h-screen p-4 selection:bg-indigo-500">
 
-<!-- ====== MÀN ĐĂNG NHẬP ====== -->
-<div id="login-screen" class="max-w-sm w-full bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl text-center relative overflow-hidden">
-    <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500 to-teal-500"></div>
-    <div class="text-5xl mb-4">👑</div>
-    <h2 class="text-xl font-black mb-1">TRẠM CẤP KEY</h2>
-    <p class="text-xs text-slate-400 mb-6">Veo 3 — Bản quyền</p>
-    <input type="password" id="pwd" placeholder="Nhập mật khẩu..." class="w-full bg-slate-950 border border-slate-700 rounded-xl p-4 text-center focus:border-emerald-500 outline-none mb-4 tracking-widest text-lg transition-all">
-    <button onclick="login()" class="w-full bg-emerald-600 hover:bg-emerald-500 py-3.5 rounded-xl font-bold shadow-lg shadow-emerald-500/20 transition-all">Truy Cập</button>
-    <p id="loginErr" class="text-red-400 text-xs mt-3 h-4"></p>
-</div>
-
 <!-- ====== MÀN QUẢN TRỊ ====== -->
-<div id="admin-screen" class="max-w-5xl w-full hidden" style="animation: fade-in-up 0.5s ease-out;">
+<div id="admin-screen" class="max-w-5xl w-full" style="animation: fade-in-up 0.5s ease-out;">
 
     <div class="flex items-center justify-between mb-6 px-1">
         <div>
@@ -96,9 +85,6 @@
 
 <script>
     // ============================================================
-    //  ⚙️ CẤU HÌNH — chỉ cần đổi 1 dòng mật khẩu dưới đây
-    // ============================================================
-    const ADMIN_PASSWORD = "veo3";   // 👈 ĐỔI MẬT KHẨU CỦA BẠN Ở ĐÂY
     const DB_URL = "https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app/veo3_licenses";
     // ============================================================
 
@@ -116,17 +102,6 @@
         const d = new Date(ms);
         return d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
     }
-
-    function login() {
-        if ($('pwd').value === ADMIN_PASSWORD) {
-            $('login-screen').classList.add('hidden');
-            $('admin-screen').classList.remove('hidden');
-            loadKeys();
-        } else {
-            $('loginErr').textContent = 'Mật khẩu không đúng!';
-        }
-    }
-    $('pwd')?.addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
 
     async function loadKeys() {
         const tbody = $('key-list');
@@ -233,6 +208,9 @@
             loadKeys();
         } catch (e) { alert('Lỗi mạng.'); }
     }
+
+    // Mở file là vào thẳng, tải danh sách mã ngay.
+    loadKeys();
 </script>
 </body>
 </html>
