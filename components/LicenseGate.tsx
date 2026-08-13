@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   normalizeCode, isValidFormat, formatCodeDisplay, isExpired, evaluate,
   getServerNow, probeServerTime, getRecord, claimSession, genToken,
   readStoredLicense, saveStoredLicense, clearStoredLicense,
-  NetworkError, LicenseState,
+  NetworkError, LicenseState, StoredLicense,
 } from '../services/licenseService';
 
 // Các "màn" của cổng kích hoạt.
@@ -12,14 +12,22 @@ type Screen = 'boot' | 'form' | 'active' | 'expired' | 'revoked' | 'kicked' | 'n
 const POLL_MS = 30000;
 
 const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [screen, setScreen] = useState<Screen>('boot');
-  const [everActive, setEverActive] = useState(false);
+  // 👉 BOOT LẠC QUAN: máy đã có mã lưu thì VÀO THẲNG app ngay, không hiện màn nào.
+  // Việc kiểm tra (đá/hết hạn/thu hồi) chạy NGẦM; chỉ chặn khi có kết luận XÁC ĐỊNH.
+  // Nhờ vậy: đã nhập mã rồi thì không bao giờ bắt nhập lại, và vẫn dùng được cả khi mạng chập chờn.
+  const bootHasLicense = useMemo(() => !!readStoredLicense(), []);
+
+  const [screen, setScreen] = useState<Screen>(bootHasLicense ? 'active' : 'form');
+  const [everActive, setEverActive] = useState(bootHasLicense);
   const [codeInput, setCodeInput] = useState('');
   const [formError, setFormError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const everActiveRef = useRef(false);
+  const everActiveRef = useRef(bootHasLicense);
   const runningRef = useRef(false);
+  const claimingRef = useRef(false);          // đang kích hoạt/chuyển máy => tạm khoá verify nền (tránh "kicked" oan)
+  const nullCountRef = useRef(0);             // đếm số lần getRecord trả null liên tiếp (chống thu hồi oan do blip)
+  const lastGoodRef = useRef<StoredLicense | null>(readStoredLicense()); // mã đọc được gần nhất (dự phòng khi đọc lỗi)
 
   const goActive = useCallback(() => {
     everActiveRef.current = true;
@@ -28,13 +36,19 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     setFormError('');
   }, []);
 
-  // Kiểm tra trạng thái mã đang lưu. isBoot=true khi cần neo đồng hồ lần đầu.
+  // Kiểm tra ngầm trạng thái mã đang lưu. Đã vào app rồi (everActive) thì lỗi mạng
+  // KHÔNG hạ màn — chỉ đổi trạng thái khi có kết luận xác định (đá/hết hạn/thu hồi).
   const runVerify = useCallback(async () => {
-    if (runningRef.current) return;
+    if (runningRef.current || claimingRef.current) return; // đang kích hoạt thì đừng verify chen ngang
     runningRef.current = true;
     try {
-      const stored = readStoredLicense();
-      if (!stored) { setScreen('form'); return; }
+      // Đọc mã. Nếu đọc HỤT (null) mà đã vào app rồi => coi là lỗi tạm (Safari ẩn danh,
+      // bộ nhớ, hoặc tab khác đăng xuất) => GIỮ app, dùng lại mã tốt gần nhất. Chỉ hiện
+      // form khi CHƯA từng kích hoạt (thật sự chưa có mã).
+      const readNow = readStoredLicense();
+      const stored = readNow || (everActiveRef.current ? lastGoodRef.current : null);
+      if (!stored) { if (!everActiveRef.current) setScreen('form'); return; }
+      if (readNow) lastGoodRef.current = readNow;
 
       let rec;
       try { rec = await getRecord(stored.code); }
@@ -46,7 +60,18 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         return;
       }
 
-      if (rec === null) { setScreen('revoked'); return; }
+      if (rec === null) {
+        // null = mã không có trên server (đã thu hồi). Nhưng cũng có thể là blip 1 nhịp:
+        // đã vào app rồi thì phải trả null 2 nhịp LIÊN TIẾP mới kết luận thu hồi.
+        if (everActiveRef.current) {
+          nullCountRef.current += 1;
+          if (nullCountRef.current >= 2) setScreen('revoked');
+        } else {
+          setScreen('revoked');
+        }
+        return;
+      }
+      nullCountRef.current = 0; // có bản ghi thật => reset đếm blip
 
       let sNow = getServerNow();
       if (sNow === null) {
@@ -87,6 +112,7 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   // Kích hoạt / chiếm phiên bằng 1 mã.
   const doClaim = useCallback(async (rawCode: string) => {
+    claimingRef.current = true;  // khoá verify nền suốt quá trình chiếm phiên (tránh "kicked" oan)
     setBusy(true);
     setFormError('');
     try {
@@ -118,10 +144,19 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       try { await claimSession(code, token, extra); }
       catch { setFormError('Lỗi mạng — kiểm tra kết nối rồi thử lại.'); return; }
 
-      saveStoredLicense({ code, token });
+      // Lưu mã và KIỂM CHỨNG đã lưu được. Nếu bộ nhớ đầy không lưu nổi => báo rõ,
+      // KHÔNG cho vào app (nếu không lần sau mở lại sẽ bắt nhập mã oan).
+      const saved = saveStoredLicense({ code, token });
+      if (!saved) {
+        setFormError('Không lưu được mã trên máy này (bộ nhớ trình duyệt đầy). Hãy bấm "Xóa Trắng" để dọn bớt rồi thử lại.');
+        return;
+      }
+      lastGoodRef.current = { code, token };
+      nullCountRef.current = 0;
       setCodeInput('');
       goActive();
     } finally {
+      claimingRef.current = false;
       setBusy(false);
     }
   }, [goActive]);
@@ -205,7 +240,8 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 <div style={iconStyle}>⏳</div>
                 <h2 style={titleStyle}>Mã đã hết hạn</h2>
                 <p style={descStyle}>Mã kích hoạt của bạn đã hết thời gian sử dụng.</p>
-                <button style={primaryBtn} onClick={logoutToForm}>Nhập mã khác</button>
+                <button style={primaryBtn} onClick={() => runVerify()} disabled={busy}>Thử lại</button>
+                <button style={ghostBtn} onClick={logoutToForm} disabled={busy}>Nhập mã khác</button>
               </>
             )}
 
@@ -214,7 +250,8 @@ const LicenseGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 <div style={iconStyle}>🚫</div>
                 <h2 style={titleStyle}>Mã không còn hiệu lực</h2>
                 <p style={descStyle}>Mã này đã bị khoá hoặc không tồn tại.</p>
-                <button style={primaryBtn} onClick={logoutToForm}>Nhập mã khác</button>
+                <button style={primaryBtn} onClick={() => runVerify()} disabled={busy}>Thử lại</button>
+                <button style={ghostBtn} onClick={logoutToForm} disabled={busy}>Nhập mã khác</button>
               </>
             )}
           </div>
