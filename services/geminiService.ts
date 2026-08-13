@@ -275,6 +275,43 @@ const callGeminiSafe = async <T>(contents: any, systemInstruction: string | unde
   throw new Error(`Lỗi mạng không xác định API Key ${providerConfig.name}.`);
 };
 
+// 👉 Lấy nội dung text từ body của endpoint kiểu OpenAI — CHỊU ĐƯỢC CẢ 2 KIỂU:
+//   (1) JSON thường:   { "choices":[{ "message":{ "content":"..." } }] }
+//   (2) Streaming SSE: nhiều dòng  data: {"choices":[{"delta":{"content":"..."}}]}  ... data: [DONE]
+// Nhiều endpoint/proxy trả SSE dù mình KHÔNG xin stream → trước đây response.json() vỡ ngay
+// ("Unexpected token 'd', "data: {"id"..."). Hàm này gộp các mảnh delta lại thành text hoàn chỉnh.
+export const extractOpenAIContent = (raw: string): string => {
+  if (!raw) return "";
+  const trimmed = raw.trimStart();
+  // Kiểu 1: JSON đơn.
+  if (trimmed[0] === '{') {
+    try {
+      const data = JSON.parse(raw);
+      const c = data?.choices?.[0]?.message?.content;
+      if (typeof c === 'string') return c;
+    } catch (e) { /* rơi xuống thử SSE */ }
+  }
+  // Kiểu 2: SSE — gom content từ delta (hoặc message) của từng dòng "data:".
+  if (raw.indexOf('data:') !== -1) {
+    let content = '';
+    for (const line of raw.split(/\r?\n/)) {
+      const l = line.trim();
+      if (!l.startsWith('data:')) continue;
+      const payload = l.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const obj = JSON.parse(payload);
+        const ch = obj?.choices?.[0];
+        const piece = ch?.delta?.content ?? ch?.message?.content;
+        if (typeof piece === 'string') content += piece;
+      } catch (e) { /* bỏ qua mảnh hỏng/không phải JSON */ }
+    }
+    if (content) return content;
+  }
+  // Cùng đường: trả nguyên văn để sanitizeJSONString/JSON.parse phía sau tự lo.
+  return raw;
+};
+
 const callOpenAISafe = async <T>(contents: any, systemInstruction: string | undefined, providerId: string, schema: any, temperature = 0.5, limiter = limitSceneConcurrency): Promise<T> => {
   const providerConfig = AI_PROVIDERS[providerId];
   if (!providerConfig) throw new Error(`[LỖI CẤU HÌNH] Không tìm thấy Model ID '${providerId}' trong hệ thống! Vui lòng chọn lại AI.`);
@@ -355,6 +392,7 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
           messages: messages,
           temperature: temperature,
           max_tokens: 8192,
+          stream: false, // xin phản hồi JSON gọn (một số proxy vẫn trả SSE → parser dưới lo tiếp)
           ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {})
         }),
         signal: controller.signal
@@ -370,8 +408,9 @@ const callOpenAISafe = async <T>(contents: any, systemInstruction: string | unde
           throw { status: response.status, details: errStr };
       }
 
-      const data = await response.json();
-      const text = data.choices?.[0]?.message?.content || "[]";
+      // Đọc body dạng TEXT rồi tự tách nội dung — chịu được cả JSON thường lẫn streaming SSE.
+      const rawBody = await response.text();
+      const text = extractOpenAIContent(rawBody) || "[]";
       let parsed = JSON.parse(sanitizeJSONString(text));
 
       if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
