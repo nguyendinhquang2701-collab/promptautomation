@@ -324,6 +324,13 @@ const App: React.FC = () => {
 
         const customProviders = localStorage.getItem('app1_custom_providers');
 
+        // 👉 GIỮ LẠI MÃ KÍCH HOẠT khi "Xóa Trắng" — đã nhập mã rồi thì không bao giờ
+        // bắt nhập lại (trừ khi chuyển máy). Xoá mã sẽ khiến app thoát ra đòi mã.
+        const license = localStorage.getItem('app1_license');
+        // 👉 Giữ luôn cài đặt thành tố prompt + trần độ dài (cài đặt của người dùng, không phải bản nháp).
+        const promptElements = localStorage.getItem('app1_prompt_elements');
+        const maxPromptChars = localStorage.getItem('app1_prompt_max_chars');
+
         const keysToSave: Record<string, string | null> = {};
         Object.keys(AI_PROVIDERS).forEach(key => {
             const storageKey = `app1_${AI_PROVIDERS[key].keyPrefix}_api_keys`;
@@ -332,11 +339,17 @@ const App: React.FC = () => {
 
         localStorage.clear();
 
+        // 👉 KHÔI PHỤC MÃ KÍCH HOẠT TRƯỚC TIÊN — nếu một setItem phía sau lỗi (bộ nhớ đầy...)
+        // thì mã vẫn đã được ghi lại, không bao giờ mất.
+        if(license) localStorage.setItem('app1_license', license);
+
         if(provider) localStorage.setItem('app1_ai_provider', provider);
         if(apiTier) localStorage.setItem('app1_api_tier', apiTier);
-        
+
         if(customProviders) localStorage.setItem('app1_custom_providers', customProviders);
-        
+        if(promptElements) localStorage.setItem('app1_prompt_elements', promptElements);
+        if(maxPromptChars) localStorage.setItem('app1_prompt_max_chars', maxPromptChars);
+
         Object.entries(keysToSave).forEach(([k, v]) => { if (v) localStorage.setItem(k, v); });
 
         setAppState(AppState.INPUT); setRawScript(''); setGlobalContext(''); setStyleAnalysis(''); setStyleSummary(''); setCharacters([]); setColorStyle('default'); setImagePreview(null);

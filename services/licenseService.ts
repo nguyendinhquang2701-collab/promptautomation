@@ -106,8 +106,20 @@ export const readStoredLicense = (): StoredLicense | null => {
     return (o && typeof o.code === 'string' && typeof o.token === 'string') ? { code: o.code, token: o.token } : null;
   } catch { return null; }
 };
-export const saveStoredLicense = (v: StoredLicense): void => {
-  try { localStorage.setItem(LS_KEY, JSON.stringify({ code: v.code, token: v.token })); } catch {}
+// Lưu mã. Trả TRUE nếu ghi thành công (đã đọc lại kiểm chứng). Nếu bộ nhớ đầy,
+// dọn ảnh xem trước (nặng nhất) rồi thử lại — KHÔNG được để mã lưu hụt âm thầm,
+// vì lưu hụt = lần sau mở lại bắt nhập mã oan.
+export const saveStoredLicense = (v: StoredLicense): boolean => {
+  const payload = JSON.stringify({ code: v.code, token: v.token });
+  const tryWrite = (): boolean => {
+    try {
+      localStorage.setItem(LS_KEY, payload);
+      return localStorage.getItem(LS_KEY) === payload;
+    } catch { return false; }
+  };
+  if (tryWrite()) return true;
+  try { localStorage.removeItem('app1_imagePreview'); } catch {}
+  return tryWrite();
 };
 export const clearStoredLicense = (): void => {
   try { localStorage.removeItem(LS_KEY); } catch {}
