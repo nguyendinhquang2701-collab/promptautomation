@@ -26,7 +26,7 @@ export interface CharacterIdentity {
   clothing?: string;
 }
 
-export type SpeedMode = 'fast' | 'ultra';
+export type SpeedMode = 'fast' | 'ultra' | 'ultra-max';
 
 export interface PromptItem {
   sceneId: number;

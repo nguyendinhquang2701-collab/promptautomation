@@ -13,10 +13,10 @@ import {
   splitIntoBatches,
 } from '../services/aiRuntime';
 
-test('prompt-sized batches keep ordering and cap each request at eight scenes', () => {
-  const batches = splitIntoBatches(Array.from({ length: 17 }, (_, index) => index + 1), 8);
+test('prompt-sized batches keep ordering and cap each request at ten scenes', () => {
+  const batches = splitIntoBatches(Array.from({ length: 17 }, (_, index) => index + 1), 10);
 
-  assert.deepEqual(batches.map(batch => batch.length), [8, 8, 1]);
+  assert.deepEqual(batches.map(batch => batch.length), [10, 7]);
   assert.deepEqual(batches.flat(), Array.from({ length: 17 }, (_, index) => index + 1));
 });
 
@@ -133,6 +133,29 @@ test('FIFO limiter releases capacity and removes cancelled queued work', async (
   const releaseThird = await third;
   assert.equal(limiter.activeCount, 1);
   releaseThird();
+  assert.equal(limiter.activeCount, 0);
+});
+
+test('limiter can reduce a four-request operation to two without interrupting active work', async () => {
+  const limiter = new AbortableFIFOLimiter(4);
+  const releases: Array<() => void> = [];
+  const firstFour = await Promise.all([1, 2, 3, 4].map(() => limiter.acquire()));
+  assert.equal(limiter.activeCount, 4);
+
+  limiter.setCapacity(2);
+  const queued = limiter.acquire();
+  assert.equal(limiter.pendingCount, 1);
+
+  firstFour[0]();
+  firstFour[1]();
+  assert.equal(limiter.activeCount, 2);
+  assert.equal(limiter.pendingCount, 1);
+
+  firstFour[2]();
+  const releaseQueued = await queued;
+  releases.push(firstFour[3], releaseQueued);
+  assert.equal(limiter.activeCount, 2);
+  releases.forEach(release => release());
   assert.equal(limiter.activeCount, 0);
 });
 

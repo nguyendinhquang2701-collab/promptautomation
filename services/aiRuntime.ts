@@ -564,7 +564,7 @@ export class AbortableFIFOLimiter {
   private active = 0;
   private readonly queue: Waiter[] = [];
 
-  constructor(readonly capacity: number) {
+  constructor(private capacity: number) {
     if (!Number.isInteger(capacity) || capacity < 1) {
       throw new RangeError('Limiter capacity must be a positive integer.');
     }
@@ -572,6 +572,19 @@ export class AbortableFIFOLimiter {
 
   get activeCount(): number {
     return this.active;
+  }
+
+  get currentCapacity(): number {
+    return this.capacity;
+  }
+
+  /** Changes admission capacity without interrupting requests already in flight. */
+  setCapacity(capacity: number): void {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new RangeError('Limiter capacity must be a positive integer.');
+    }
+    this.capacity = capacity;
+    this.drain();
   }
 
   get pendingCount(): number {
