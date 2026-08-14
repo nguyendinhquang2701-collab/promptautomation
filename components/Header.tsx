@@ -28,6 +28,7 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
 
   const [provider, setProvider] = useState<string>('gemini');
   const [speedMode, setSpeedMode] = useState<SpeedMode>('fast');
+  const [isSpeedDropdownOpen, setIsSpeedDropdownOpen] = useState(false);
   const [isProviderDropdownOpen, setIsProviderDropdownOpen] = useState(false);
   const [providersState, setProvidersState] = useState<Record<string, ProviderConfig>>(AI_PROVIDERS);
   
@@ -42,6 +43,7 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
+  const speedDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const savedProvider = safeStorageGet('app1_ai_provider') || 'gemini';
@@ -63,14 +65,23 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
       if (document.getElementById('custom-ai-modal')?.contains(event.target as Node)) return;
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) setIsKeyManagerOpen(false);
       if (providerDropdownRef.current && !providerDropdownRef.current.contains(event.target as Node)) setIsProviderDropdownOpen(false);
+      if (speedDropdownRef.current && !speedDropdownRef.current.contains(event.target as Node)) setIsSpeedDropdownOpen(false);
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsSpeedDropdownOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
   }, []);
 
   const handleSpeedModeChange = (mode: SpeedMode) => {
     if (isOperationActive) return;
     setSpeedMode(mode);
+    setIsSpeedDropdownOpen(false);
     try { localStorage.setItem('app1_speed_mode', mode); } catch { /* storage unavailable */ }
   };
 
@@ -263,25 +274,34 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
             </div>
 
             {/* 👉 MỞ RỘNG BỀ NGANG POPUP W-96 */}
-            <div className="flex rounded-xl border border-slate-800 bg-slate-900 p-1 shadow-lg" role="group" aria-label="Tốc độ xử lý AI">
+            <div className="relative" ref={speedDropdownRef}>
               <button
                 type="button"
-                onClick={() => handleSpeedModeChange('fast')}
+                onClick={() => !isOperationActive && setIsSpeedDropdownOpen(value => !value)}
                 disabled={isOperationActive}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${speedMode === 'fast' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'} ${isOperationActive ? 'cursor-not-allowed opacity-60' : ''}`}
-                title="Fast: chạy tuần tự, ổn định nhất"
+                aria-haspopup="menu"
+                aria-expanded={isSpeedDropdownOpen}
+                className={`flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-xs font-bold text-white shadow-lg transition-colors hover:border-slate-700 hover:bg-slate-800 ${isOperationActive ? 'cursor-not-allowed opacity-60' : ''}`}
+                title="Chọn tốc độ xử lý"
               >
-                Fast
+                <span className={speedMode === 'ultra' ? 'text-fuchsia-400' : 'text-indigo-400'}>⚡</span>
+                <span>{speedMode === 'ultra' ? 'Ultra' : 'Fast'}</span>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-4 w-4 text-slate-500 transition-transform ${isSpeedDropdownOpen ? 'rotate-180' : ''}`}>
+                  <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z" clipRule="evenodd" />
+                </svg>
               </button>
-              <button
-                type="button"
-                onClick={() => handleSpeedModeChange('ultra')}
-                disabled={isOperationActive}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${speedMode === 'ultra' ? 'bg-fuchsia-600 text-white' : 'text-slate-400 hover:text-white'} ${isOperationActive ? 'cursor-not-allowed opacity-60' : ''}`}
-                title="Ultra: tối đa 2 request song song trên cùng API key"
-              >
-                Ultra
-              </button>
+              {isSpeedDropdownOpen && (
+                <div role="menu" className="absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 p-1 shadow-2xl">
+                  <button type="button" role="menuitem" onClick={() => handleSpeedModeChange('fast')} className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${speedMode === 'fast' ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-300 hover:bg-slate-700'}`}>
+                    <span className="mt-0.5 text-indigo-400">{speedMode === 'fast' ? '✓' : '○'}</span>
+                    <span><span className="block text-xs font-bold">Fast</span><span className="block text-[10px] text-slate-400">1 luồng · ổn định nhất</span></span>
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => handleSpeedModeChange('ultra')} className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${speedMode === 'ultra' ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'text-slate-300 hover:bg-slate-700'}`}>
+                    <span className="mt-0.5 text-fuchsia-400">{speedMode === 'ultra' ? '✓' : '○'}</span>
+                    <span><span className="block text-xs font-bold">Ultra</span><span className="block text-[10px] text-slate-400">Tối đa 2 luồng · cùng một API key</span></span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="relative" ref={dropdownRef}>

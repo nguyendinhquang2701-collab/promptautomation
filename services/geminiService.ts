@@ -11,6 +11,7 @@ import {
   remainingDeadlineMs,
   runWithRetry,
   selectNextKey,
+  splitIntoBatches,
   updateKeyState,
 } from "./aiRuntime";
 import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
@@ -50,6 +51,7 @@ export interface AIOperationOptions {
   /** Ultra binds a whole operation to one saved key slot. */
   keySlot?: number;
   onConcurrencyDowngrade?: (reason: string) => void;
+  onRequestActivity?: (delta: 1 | -1) => void;
 }
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
@@ -115,7 +117,7 @@ loadAIProviders();
 
 // One conservative production pipeline for every provider: a single active
 // request, moderate batches, and a small gap between completed calls.
-const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 5, REQUEST_GAP_MS: 350 };
+const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 8, REQUEST_GAP_MS: 350 };
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
 const DEFAULT_WORKFLOW_TIMEOUT_MS = {
@@ -558,6 +560,7 @@ const callAISafe = async <T>(
         const selection = selected.selection;
         options.onProgress?.(`Đang gọi ${providerConfig.name} (lượt ${attempt}/${maxAttempts})...`);
 
+        options.onRequestActivity?.(1);
         try {
           const transportTimeout = Math.max(1, Math.min(attemptTimeoutMs, remainingDeadlineMs(callDeadline)));
           return providerConfig.type === 'gemini'
@@ -574,6 +577,8 @@ const callAISafe = async <T>(
           });
           if (classification.keyAction === 'keep') keyPool = { ...keyPool, cursor: selection.index };
           throw error;
+        } finally {
+          options.onRequestActivity?.(-1);
         }
       }, {
         signal: options.signal,
@@ -1908,8 +1913,12 @@ ${techDetailsStr}
 ${options?.audioMode !== 'keep' ? 'AUDIO: describe visuals only — no dialogue, no on-screen text, no music.' : ''}
 Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese.`;
 
-  const batches: Scene[][] = [];
-  for (let i = 0; i < segment.scenes.length; i += CONFIG.PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + CONFIG.PROMPT_BATCH_SIZE));
+  const batches = splitIntoBatches(segment.scenes, CONFIG.PROMPT_BATCH_SIZE);
+  const shouldSplitPromptBatch = (error: unknown, batch: Scene[]) => {
+    if (batch.length <= 4) return false;
+    const message = error instanceof Error ? error.message : String(error);
+    return /\[(?:INVALID_JSON|EMPTY_RESPONSE)\]|\b(?:413|payload too large|context length|output.*truncat)/i.test(message);
+  };
 
   // 👉 Ghép PROMPT JSON theo THÀNH TỐ người dùng đã tick (popup ⚙️): thành tố 'ai' lấy
   // nội dung AI viết; thành tố 'fixed' gắn giá trị cố định. Áp trần độ dài nếu có.
@@ -2113,12 +2122,25 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
     };
 
     const allResults: PromptItem[] = [];
-    for (let index = 0; index < batches.length; index++) {
+    let index = 0;
+    while (index < batches.length) {
       if (operation.signal?.aborted) throw operation.signal.reason;
-      const items = await processBatch(batches[index], index);
+      const batch = batches[index];
+      operation.onProgress?.(`Đang tạo mẻ ${index + 1}/${batches.length} (${batch.length} cảnh)...`);
+      let items: PromptItem[];
+      try {
+        items = await processBatch(batch, index);
+      } catch (error) {
+        if (!shouldSplitPromptBatch(error, batch)) throw error;
+        const midpoint = Math.ceil(batch.length / 2);
+        batches.splice(index, 1, batch.slice(0, midpoint), batch.slice(midpoint));
+        operation.onProgress?.(`Mẻ ${index + 1} quá lớn; đang tách thành ${midpoint} + ${batch.length - midpoint} cảnh.`);
+        continue;
+      }
       allResults.push(...items);
       operation.onPartialPrompts?.([...allResults].sort((a, b) => a.sceneId - b.sceneId));
       operation.onProgress?.(`Đã hoàn thành mẻ ${index + 1}/${batches.length} (${allResults.length} prompt)`);
+      index += 1;
     }
 
     return allResults.sort((a, b) => a.sceneId - b.sceneId);

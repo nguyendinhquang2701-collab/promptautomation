@@ -681,3 +681,13 @@ export const runWithWorkerPool = async <T>(
 
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, (_, index) => runWorker(index)));
 };
+
+/** Split an ordered list into bounded, non-empty batches. */
+export const splitIntoBatches = <T>(items: readonly T[], batchSize: number): T[][] => {
+  if (!Number.isInteger(batchSize) || batchSize < 1) throw new RangeError('Batch size must be a positive integer.');
+  const batches: T[][] = [];
+  for (let index = 0; index < items.length; index += batchSize) {
+    batches.push(items.slice(index, index + batchSize));
+  }
+  return batches;
+};

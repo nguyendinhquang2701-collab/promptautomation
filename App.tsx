@@ -20,6 +20,10 @@ interface ActiveOperation {
   speedMode: SpeedMode;
   keySlot?: number;
   ultraDowngraded: boolean;
+  effectiveConcurrency: number;
+  activeRequests: number;
+  completedProjects: number;
+  totalProjects: number;
   startedAt: number;
   deadlineAt: number;
   controller: AbortController;
@@ -30,6 +34,12 @@ interface OperationView {
   id: string;
   title: string;
   providerName: string;
+  kind: OperationKind;
+  speedMode: SpeedMode;
+  effectiveConcurrency: number;
+  activeRequests: number;
+  completedProjects: number;
+  totalProjects: number;
   startedAt: number;
   deadlineAt: number;
   progress: string;
@@ -52,7 +62,7 @@ const MAX_OPERATION_DEADLINE_MS = 60 * 60_000;
 const estimateWorkflowDeadline = (kind: 'analyze' | 'prompt', targets: ScriptProject[]): number => {
   const estimatedBatches = kind === 'analyze'
     ? targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.content.length / 1_200)), 0)
-    : targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.scenes.length / 5) + 1), 0);
+    : targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.scenes.length / 8) + 1), 0);
   return Math.min(
     MAX_OPERATION_DEADLINE_MS,
     Math.max(OPERATION_DEADLINES[kind], 120_000 + estimatedBatches * 120_000),
@@ -239,6 +249,10 @@ const App: React.FC = () => {
       speedMode,
       keySlot: speedMode === 'ultra' && availableKeys.length > 0 ? 0 : undefined,
       ultraDowngraded: false,
+      effectiveConcurrency: speedMode === 'ultra' && (kind === 'analyze' || kind === 'prompt') ? 2 : 1,
+      activeRequests: 0,
+      completedProjects: 0,
+      totalProjects: 0,
       startedAt,
       deadlineAt,
       controller,
@@ -249,6 +263,12 @@ const App: React.FC = () => {
       id,
       title,
       providerName: operation.providerName,
+      kind,
+      speedMode,
+      effectiveConcurrency: operation.effectiveConcurrency,
+      activeRequests: 0,
+      completedProjects: 0,
+      totalProjects: 0,
       startedAt,
       deadlineAt,
       progress: 'Đang chuẩn bị dữ liệu...',
@@ -259,6 +279,16 @@ const App: React.FC = () => {
   const updateOperationProgress = (operation: ActiveOperation, progress: string) => {
     if (!isCurrentOperation(operation.id)) return;
     setOperationView(prev => prev?.id === operation.id ? { ...prev, progress } : prev);
+  };
+
+  const setOperationTotal = (operation: ActiveOperation, totalProjects: number) => {
+    operation.totalProjects = totalProjects;
+    setOperationView(prev => prev?.id === operation.id ? { ...prev, totalProjects } : prev);
+  };
+
+  const markOperationProjectComplete = (operation: ActiveOperation) => {
+    operation.completedProjects = Math.min(operation.totalProjects, operation.completedProjects + 1);
+    setOperationView(prev => prev?.id === operation.id ? { ...prev, completedProjects: operation.completedProjects } : prev);
   };
 
   const operationOptions = (
@@ -277,7 +307,13 @@ const App: React.FC = () => {
     onConcurrencyDowngrade: (reason) => {
       if (operation.speedMode !== 'ultra' || operation.ultraDowngraded) return;
       operation.ultraDowngraded = true;
+      operation.effectiveConcurrency = 1;
+      setOperationView(prev => prev?.id === operation.id ? { ...prev, effectiveConcurrency: 1 } : prev);
       updateOperationProgress(operation, `Ultra tạm chuyển về Fast vì API báo ${reason}.`);
+    },
+    onRequestActivity: (delta) => {
+      operation.activeRequests = Math.max(0, operation.activeRequests + delta);
+      setOperationView(prev => prev?.id === operation.id ? { ...prev, activeRequests: operation.activeRequests } : prev);
     },
     ...partial,
   });
@@ -382,6 +418,7 @@ const App: React.FC = () => {
     if (!requireApiKey() || targets.length === 0) return;
     const operation = beginOperation('analyze', title, estimateWorkflowDeadline('analyze', targets));
     if (!operation) return;
+    setOperationTotal(operation, targets.length);
     const targetIds = new Set(targets.map(project => project.id));
     setLoading(true);
     if (navigateToReview) setAppState(AppState.SCENE_REVIEW);
@@ -431,6 +468,7 @@ const App: React.FC = () => {
         throw error;
       } finally {
         completed += 1;
+        markOperationProjectComplete(operation);
         updateOperationProgress(operation, `Đã xử lý ${completed}/${targets.length} phân đoạn`);
       }
     };
@@ -526,6 +564,7 @@ const App: React.FC = () => {
     if (!requireApiKey() || targets.length === 0) return;
     const operation = beginOperation('prompt', title, estimateWorkflowDeadline('prompt', targets));
     if (!operation) return;
+    setOperationTotal(operation, targets.length);
     const targetIds = new Set(targets.map(project => project.id));
     setLoading(true);
     if (navigateToResult) setAppState(AppState.RESULT);
@@ -590,6 +629,7 @@ const App: React.FC = () => {
         throw error;
       } finally {
         completed += 1;
+        markOperationProjectComplete(operation);
         updateOperationProgress(operation, `Đã xử lý ${completed}/${targets.length} phân đoạn`);
       }
     };
@@ -691,9 +731,13 @@ const App: React.FC = () => {
               <p className="mt-1 break-words text-sm text-indigo-300">{operationView.progress}</p>
               <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-slate-400">
                 <span>{operationView.providerName}</span>
-                <span>Chế độ ổn định · 1 yêu cầu mỗi lần</span>
+                <span>{operationView.speedMode === 'ultra'
+                  ? `Ultra${operationView.effectiveConcurrency === 1 ? ' → Fast' : ''} · ${operationView.kind === 'analyze' || operationView.kind === 'prompt' ? `${operationView.effectiveConcurrency} worker` : 'bước này chạy đơn'}`
+                  : 'Fast · 1 worker'}</span>
+                <span>Đang chạy {operationView.activeRequests}/{operationView.effectiveConcurrency} request AI</span>
+                {operationView.totalProjects > 0 && <span>Hoàn thành {operationView.completedProjects}/{operationView.totalProjects} phân đoạn</span>}
                 <span>Đã chạy {formatDuration((operationClock - operationView.startedAt) / 1000)}</span>
-                <span>Còn tối đa {formatDuration((operationView.deadlineAt - operationClock) / 1000)}</span>
+                <span>Giới hạn còn lại {formatDuration((operationView.deadlineAt - operationClock) / 1000)}</span>
               </div>
             </div>
           </div>
