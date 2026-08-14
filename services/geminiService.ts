@@ -132,7 +132,9 @@ loadAIProviders();
 // One conservative production pipeline for every provider: a single active
 // request, moderate batches, and a small gap between completed calls.
 const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 10, REQUEST_GAP_MS: 350 };
-const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+// Parallel modes may queue inside an OpenAI-compatible gateway even after it
+// has returned HTTP 200. Allow Ultra Max's longest request policy to finish.
+const DEFAULT_CALL_TIMEOUT_MS = 180_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
 // Fast prioritizes a quick, bounded failure over a request that can hold a
 // sequential workflow hostage for several minutes.

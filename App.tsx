@@ -358,7 +358,11 @@ const App: React.FC = () => {
     speedMode: operation.speedMode,
     keySlot: operation.keySlot,
     requestLimiter: operation.requestLimiter,
-    attemptTimeoutMs: operation.speedMode === 'fast' ? undefined : 60_000,
+    attemptTimeoutMs: operation.speedMode === 'ultra-max'
+      ? 180_000
+      : operation.speedMode === 'ultra'
+        ? 120_000
+        : undefined,
     maxAttempts: 2,
     onProgress: (message) => updateOperationProgress(operation, prefix ? `${prefix} • ${message}` : message),
     onConcurrencyDowngrade: (reason) => {
