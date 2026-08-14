@@ -1,27 +1,33 @@
 import path from 'path';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 import { cloudflare } from "@cloudflare/vite-plugin";
 
-export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, '.', ['VITE_', '']);
-    const apiKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
-    return {
+export default defineConfig({
       server: {
         port: 3000,
         host: '0.0.0.0',
       },
       plugins: [react(), tailwindcss(), cloudflare()],
-      define: {
-        'process.env.API_KEY': JSON.stringify(apiKey),
-        'process.env.GEMINI_API_KEY': JSON.stringify(apiKey)
+      // Keep the build single-page-only.  The offline license-admin utility is
+      // deliberately not an application entry point and must never be deployed
+      // with the customer-facing static assets.
+      build: {
+        rollupOptions: {
+          input: path.resolve(__dirname, 'index.html'),
+          output: {
+            manualChunks(id) {
+              if (id.includes('@google/genai') || id.includes('protobufjs')) return 'ai-sdk';
+              if (id.includes('react-dom') || id.includes('/react/')) return 'react-vendor';
+            },
+          },
+        },
       },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
         }
       }
-    };
 });

@@ -1,9 +1,21 @@
-# Mã kích hoạt — Hướng dẫn cho người bán
+# Mã kích hoạt — CẢNH BÁO trước khi bán
+
+> **KHÔNG dùng cơ chế hiện tại để bảo vệ sản phẩm trả phí.** Firebase Realtime
+> Database đang cho phép trình duyệt đọc/ghi trực tiếp. Người biết URL có thể xem,
+> tạo, gia hạn, chiếm phiên hoặc xóa mã mà không cần `admin.html`. Việc giữ file
+> quản trị trên máy riêng không khắc phục được lỗ hổng này.
+>
+> Trước khi bán, phải chuyển toàn bộ thao tác license sang backend đã xác thực,
+> đặt Firebase Rules mặc định từ chối truy cập công khai, giữ credential ở secret
+> của server, dùng transaction khi kích hoạt, và thêm rate limit/audit log/admin MFA.
+> Client chỉ nên nhận một phiên hoặc token ký có thời hạn ngắn.
+
+Phần dưới chỉ mô tả công cụ **legacy để thử nội bộ**, không phải hướng dẫn triển khai production.
 
 Bán app, mỗi mã có **hạn dùng** (1 giờ thử / 7 ngày / 1 tháng / 3 tháng / 1 năm / vĩnh viễn)
 và **chỉ đăng nhập được ở một nơi cùng lúc** — khách kích hoạt ở máy mới thì máy cũ tự đăng xuất.
 
-**Không cần cài đặt gì cả.** Firebase của app đã mở sẵn, không cần secret, không cần chỉnh luật.
+Firebase mở công khai là cấu hình thử nghiệm không an toàn; không triển khai cấu hình này cho khách hàng.
 
 ---
 
@@ -51,10 +63,8 @@ Ngay trong bảng của `admin.html`:
 
 ---
 
-> ⚠️ **Lưu ý bảo mật (thành thật):** để cho đơn giản, Firebase đang để mở — nghĩa là người
-> rành kỹ thuật, nếu biết đường link database, có thể xem hoặc sửa mã. Bán cho khách thường
-> thì hoàn toàn ổn (giống hệt cách công cụ cũ của bạn đang chạy). Nếu sau này cần khoá chặt
-> hơn (bắt đăng nhập admin, chặn xem trộm), nhắn tôi làm bản nâng cấp.
+> ⚠️ Firebase mở không phù hợp cho bất kỳ nhóm khách trả phí nào; đây là lỗi P0,
+> không phải hạng mục nâng cấp tùy chọn.
 >
 > `admin.html` là công cụ nội bộ — chỉ mở trên máy bạn, đừng đưa lên web, đừng chia sẻ file.
 > Khi build app (`npm run build`) file này **không** bị đóng gói nên khách không thấy được.

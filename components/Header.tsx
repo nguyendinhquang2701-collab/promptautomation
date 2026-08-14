@@ -1,6 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AI_PROVIDERS, ProviderConfig, loadAIProviders } from '../services/geminiService';
 
+const safeStorageGet = (key: string): string | null => {
+  try { return localStorage.getItem(key); } catch { return null; }
+};
+
+const readStoredArray = <T,>(key: string): T[] => {
+  const raw = safeStorageGet(key);
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as T[] : [];
+  } catch {
+    return [];
+  }
+};
+
 const Header: React.FC = () => {
   const [isKeyManagerOpen, setIsKeyManagerOpen] = useState(false);
   const [keyInput, setKeyInput] = useState('');
@@ -10,7 +25,8 @@ const Header: React.FC = () => {
   const [isProviderDropdownOpen, setIsProviderDropdownOpen] = useState(false);
   const [providersState, setProvidersState] = useState<Record<string, ProviderConfig>>(AI_PROVIDERS);
   
-  const [apiTier, setApiTier] = useState<'free' | 'paid'>('paid');
+  // Mặc định an toàn cho key miễn phí; người có gói trả phí có thể chủ động bật đa luồng.
+  const [apiTier, setApiTier] = useState<'free' | 'paid'>('free');
   const [isTierDropdownOpen, setIsTierDropdownOpen] = useState(false);
   
   const [isAgreed, setIsAgreed] = useState(false);
@@ -27,17 +43,17 @@ const Header: React.FC = () => {
   const tierDropdownRef = useRef<HTMLDivElement>(null); 
 
   useEffect(() => {
-    const savedTier = (localStorage.getItem('app1_api_tier') as 'free' | 'paid') || 'paid';
+    const savedTier = (safeStorageGet('app1_api_tier') as 'free' | 'paid') || 'free';
     setApiTier(savedTier);
 
-    const savedProvider = localStorage.getItem('app1_ai_provider') || 'gemini';
+    const savedProvider = safeStorageGet('app1_ai_provider') || 'gemini';
     const activeProvider = AI_PROVIDERS[savedProvider] ? savedProvider : Object.keys(AI_PROVIDERS)[0] || 'gemini';
     setProvider(activeProvider);
     
     const config = AI_PROVIDERS[activeProvider];
     if (config) {
         // 👉 Đọc Key từ LocalStorage để hiển thị lại vào Form, tự động thêm \n\n giữa các Key
-        const savedKeys = JSON.parse(localStorage.getItem(`app1_${config.keyPrefix}_api_keys`) || '[]');
+        const savedKeys = readStoredArray<string>(`app1_${config.keyPrefix}_api_keys`).filter(key => typeof key === 'string');
         setKeyInput(savedKeys.join('\n\n')); 
         setKeyCount(savedKeys.length);
         if (savedKeys.length > 0) setIsAgreed(true);
@@ -58,7 +74,8 @@ const Header: React.FC = () => {
     setProvider(pId);
     localStorage.setItem('app1_ai_provider', pId);
     const config = AI_PROVIDERS[pId];
-    const savedKeys = JSON.parse(localStorage.getItem(`app1_${config.keyPrefix}_api_keys`) || '[]');
+    if (!config) return;
+    const savedKeys = readStoredArray<string>(`app1_${config.keyPrefix}_api_keys`).filter(key => typeof key === 'string');
     setKeyInput(savedKeys.join('\n\n'));
     setKeyCount(savedKeys.length);
     setIsProviderDropdownOpen(false);
@@ -94,18 +111,38 @@ const Header: React.FC = () => {
           return;
       }
       
+      let normalizedBaseUrl: string;
+      try {
+          const parsed = new URL(customBaseUrl.trim());
+          const localDevHost = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+          if (parsed.protocol !== 'https:' && !(localDevHost && parsed.protocol === 'http:')) {
+              alert('Vì an toàn API Key, Link API phải dùng HTTPS (HTTP chỉ được phép với localhost khi phát triển).');
+              return;
+          }
+          if (parsed.username || parsed.password) {
+              alert('Link API không được chứa tên đăng nhập hoặc mật khẩu.');
+              return;
+          }
+          parsed.hash = '';
+          normalizedBaseUrl = parsed.toString().replace(/\/+$/, '');
+      } catch {
+          alert('Link API Server không hợp lệ. Ví dụ: https://api.example.com/v1');
+          return;
+      }
+
       const newId = `custom_${Date.now()}`;
       const newConfig: ProviderConfig = {
           id: newId,
           name: customName,
           type: 'openai-compatible',
           model: customModelId,
-          baseUrl: customBaseUrl,
+          baseUrl: normalizedBaseUrl,
           keyPrefix: newId,
           group: '🤖 AI Tùy Chỉnh'
       };
 
-      const existingCustoms = JSON.parse(localStorage.getItem('app1_custom_providers') || '[]');
+      const existingCustoms = readStoredArray<ProviderConfig>('app1_custom_providers')
+          .filter(item => item && typeof item === 'object');
       existingCustoms.push(newConfig);
       localStorage.setItem('app1_custom_providers', JSON.stringify(existingCustoms));
 
@@ -127,7 +164,7 @@ const Header: React.FC = () => {
       e.stopPropagation(); 
       if (!window.confirm("Xóa cấu hình Model này khỏi máy?")) return;
       
-      let existingCustoms = JSON.parse(localStorage.getItem('app1_custom_providers') || '[]');
+      let existingCustoms = readStoredArray<ProviderConfig>('app1_custom_providers');
       existingCustoms = existingCustoms.filter((p: any) => p.id !== idToDelete);
       localStorage.setItem('app1_custom_providers', JSON.stringify(existingCustoms));
       localStorage.removeItem(`app1_${idToDelete}_api_keys`);
@@ -384,7 +421,7 @@ const Header: React.FC = () => {
                <div>
                   <label className="text-[11px] uppercase font-bold text-slate-400 tracking-wider block mb-2">API Key (Khóa bí mật)</label>
                   <input type="password" value={customApiKey} onChange={e=>setCustomApiKey(e.target.value)} placeholder="sk-or-v1-..." className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm tracking-wider"/>
-                  <p className="text-[10px] text-slate-500 mt-1.5">Lưu ý: API Key của bạn chỉ được lưu an toàn 100% trên LocalStorage của máy này.</p>
+                  <p className="text-[10px] text-amber-400/90 mt-1.5">Key được lưu cục bộ nhưng không mã hóa, và sẽ được gửi tới đúng Link API ở trên. Chỉ dùng endpoint HTTPS mà bạn tin cậy.</p>
                </div>
             </div>
 
@@ -411,10 +448,10 @@ const Header: React.FC = () => {
             </div>
 
             <div className="space-y-4 text-xs text-slate-300 leading-relaxed max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-              <p><strong className="text-emerald-400 block mb-1">1. Lưu trữ an toàn 100% Cục bộ:</strong> Hệ thống được thiết kế để API Key của bạn <b>CHỈ</b> được lưu trữ trên bộ nhớ đệm (Local Storage) của chính trình duyệt bạn đang sử dụng.</p>
-              <p><strong className="text-emerald-400 block mb-1">2. Chúng tôi KHÔNG NHÌN THẤY Key của bạn:</strong> Phần mềm này hoạt động độc lập (Client-side). Chúng tôi hoàn toàn KHÔNG có cơ sở dữ liệu (Database/Backend) để thu thập hay nhìn thấy API Key của bạn.</p>
-              <p><strong className="text-red-400 block mb-1">3. Cảnh báo rủi ro từ Tiện ích mở rộng (Extensions):</strong> Tuy nhiên, các tiện ích mở rộng độc hại trên trình duyệt có thể lén lút đọc dữ liệu. Hãy cẩn trọng.</p>
-              <p><strong className="text-amber-400 block mb-1">4. Tuyên bố Miễn Trừ Trách Nhiệm:</strong> Bạn là người duy nhất chịu trách nhiệm bảo mật API Key của mình.</p>
+              <p><strong className="text-emerald-400 block mb-1">1. Lưu cục bộ trên thiết bị:</strong> API Key được lưu trong LocalStorage của trình duyệt để tái sử dụng. Dữ liệu này <b>không được mã hóa</b>; hãy dùng key riêng, giới hạn quota và quyền truy cập.</p>
+              <p><strong className="text-indigo-400 block mb-1">2. Dữ liệu gửi tới nhà cung cấp AI:</strong> Key, prompt và nội dung tham chiếu được gửi trực tiếp tới nhà cung cấp/endpoint bạn chọn để xử lý. Hãy kiểm tra chính sách dữ liệu của họ trước khi dùng.</p>
+              <p><strong className="text-red-400 block mb-1">3. Rủi ro trên trình duyệt:</strong> Mã chạy cùng website, lỗ hổng XSS hoặc tiện ích mở rộng có quyền phù hợp có thể đọc LocalStorage. Không nhập key dùng chung của công ty.</p>
+              <p><strong className="text-amber-400 block mb-1">4. Trách nhiệm sử dụng:</strong> Bạn chịu trách nhiệm chọn endpoint đáng tin cậy và thu hồi key ngay khi nghi ngờ bị lộ.</p>
             </div>
 
             <button 

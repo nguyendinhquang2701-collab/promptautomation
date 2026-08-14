@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "tsc --noEmit",
+    "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "preview": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy"
   },
@@ -23,6 +24,7 @@
     "@types/node": "^22.14.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "tsx": "^4.20.6",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0",

@@ -54,6 +54,7 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
   const [showPromptSettings, setShowPromptSettings] = useState(false);
   const hasContent = projects.some(p => p.content.trim().length > 0);
   const canExtract = rawScript.trim().length > 10;
+  const isBusy = isAnalyzing || isExtractingContext || isAnalyzingStyle;
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -76,7 +77,11 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
   };
 
   return (
-    <div className="w-full max-w-6xl mx-auto animate-fade-in">
+    <fieldset
+      disabled={isBusy}
+      aria-busy={isBusy}
+      className="w-full min-w-0 max-w-6xl mx-auto animate-fade-in border-0 p-0 disabled:opacity-90"
+    >
       <div className="flex justify-between items-end mb-6">
         <div>
           <h2 className="text-2xl font-bold text-white">Thiết Lập Sản Xuất</h2>
@@ -221,7 +226,7 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
             </div>
 
             <div className="flex flex-col gap-3">
-              <div onClick={() => fileInputRef.current?.click()} className={`relative h-28 rounded-xl border-2 border-dashed transition-all cursor-pointer flex items-center justify-center overflow-hidden ${imagePreview ? 'border-emerald-500/50' : 'border-slate-700 hover:border-emerald-500/30 hover:bg-emerald-500/5'}`}>
+              <div onClick={() => !isBusy && fileInputRef.current?.click()} className={`relative h-28 rounded-xl border-2 border-dashed transition-all flex items-center justify-center overflow-hidden ${isBusy ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'} ${imagePreview ? 'border-emerald-500/50' : 'border-slate-700 hover:border-emerald-500/30 hover:bg-emerald-500/5'}`}>
                 {imagePreview ? (<><img src={imagePreview} alt="Ref" className="w-full h-full object-cover" /><div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"><span className="text-white text-[10px] font-bold">Thay đổi ảnh</span></div></>) : (<div className="text-center p-2"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 mx-auto text-slate-600 mb-1"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><span className="text-slate-500 text-[10px]">Tải ảnh mẫu (Gốc)</span></div>)}
                 <input type="file" ref={fileInputRef} onChange={handleImageChange} accept="image/*" className="hidden" />
               </div>
@@ -337,7 +342,7 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
           {isAnalyzing ? "Đang Phân Tích Cảnh..." : "Bắt Đầu Chia Cảnh 8s"}
         </button>
       </div>
-    </div>
+    </fieldset>
   );
 };
 
