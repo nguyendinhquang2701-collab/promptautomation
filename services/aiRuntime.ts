@@ -648,3 +648,36 @@ export class AbortableFIFOLimiter {
     }
   }
 }
+
+export interface WorkerPoolOptions {
+  /** Stop all workers before they claim another item. */
+  shouldStop?: () => boolean;
+  /** In Ultra mode, stop secondary workers after provider backpressure. */
+  shouldReduceToSingleWorker?: () => boolean;
+}
+
+/**
+ * A small deterministic worker pool for independent projects. Callers own
+ * result persistence; this primitive only controls how many jobs are active.
+ */
+export const runWithWorkerPool = async <T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+  options: WorkerPoolOptions = {},
+): Promise<void> => {
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new RangeError('Worker concurrency must be positive.');
+  let nextIndex = 0;
+
+  const runWorker = async (workerIndex: number): Promise<void> => {
+    while (!options.shouldStop?.()) {
+      if (workerIndex > 0 && options.shouldReduceToSingleWorker?.()) return;
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      await worker(items[index], index);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, (_, index) => runWorker(index)));
+};

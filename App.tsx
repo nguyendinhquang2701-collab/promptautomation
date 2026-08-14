@@ -3,10 +3,11 @@ import ScriptInput from './components/ScriptInput';
 import SceneList from './components/SceneList';
 import PromptOutput from './components/PromptOutput';
 import Header from './components/Header';
-import { AppState, ScriptProject, ColorStyle, CharacterIdentity } from './types';
+import { AppState, ScriptProject, ColorStyle, CharacterIdentity, SpeedMode } from './types';
 import { analyzeSingleSegmentToScenes, generatePromptsForSingleSegment, extractContextAndCharacters, analyzeImageStyle, AI_PROVIDERS, repairFailedScenes, PromptOptions, AIOperationOptions } from './services/geminiService';
 import { createDefaultProject, hydrateProjectsWithReport, serializeProjects } from './state/projectPersistence';
 import { splitRawScriptIntoSegments } from './state/scriptSegmentation';
+import { runWithWorkerPool } from './services/aiRuntime';
 
 type OperationKind = 'context' | 'style' | 'analyze' | 'prompt' | 'repair';
 
@@ -16,6 +17,9 @@ interface ActiveOperation {
   title: string;
   providerId: string;
   providerName: string;
+  speedMode: SpeedMode;
+  keySlot?: number;
+  ultraDowngraded: boolean;
   startedAt: number;
   deadlineAt: number;
   controller: AbortController;
@@ -87,6 +91,8 @@ const readStoredJSON = <T,>(key: string, fallback: T): T => {
   if (!raw) return fallback;
   try { return JSON.parse(raw) as T; } catch { return fallback; }
 };
+
+const readSpeedMode = (): SpeedMode => safeGetItem('app1_speed_mode') === 'ultra' ? 'ultra' : 'fast';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(() => (safeGetItem('app1_appState') as AppState) || AppState.INPUT);
@@ -216,6 +222,8 @@ const App: React.FC = () => {
     const selectedProviderId = safeGetItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0]) || 'gemini';
     const provider = AI_PROVIDERS[selectedProviderId] || AI_PROVIDERS[Object.keys(AI_PROVIDERS)[0]];
     const providerId = provider?.id || selectedProviderId;
+    const speedMode = readSpeedMode();
+    const availableKeys = provider ? readStoredJSON<string[]>(`app1_${provider.keyPrefix}_api_keys`, []).filter(key => typeof key === 'string' && key.trim()) : [];
     const startedAt = Date.now();
     const effectiveDeadlineMs = Math.min(MAX_OPERATION_DEADLINE_MS, Math.max(OPERATION_DEADLINES[kind], deadlineMs));
     const deadlineAt = startedAt + effectiveDeadlineMs;
@@ -228,6 +236,9 @@ const App: React.FC = () => {
       title,
       providerId,
       providerName: provider?.name || 'AI',
+      speedMode,
+      keySlot: speedMode === 'ultra' && availableKeys.length > 0 ? 0 : undefined,
+      ultraDowngraded: false,
       startedAt,
       deadlineAt,
       controller,
@@ -258,9 +269,16 @@ const App: React.FC = () => {
     signal: operation.controller.signal,
     deadlineAt: operation.deadlineAt,
     providerId: operation.providerId,
+    speedMode: operation.speedMode,
+    keySlot: operation.keySlot,
     attemptTimeoutMs: 60_000,
     maxAttempts: 2,
     onProgress: (message) => updateOperationProgress(operation, prefix ? `${prefix} • ${message}` : message),
+    onConcurrencyDowngrade: (reason) => {
+      if (operation.speedMode !== 'ultra' || operation.ultraDowngraded) return;
+      operation.ultraDowngraded = true;
+      updateOperationProgress(operation, `Ultra tạm chuyển về Fast vì API báo ${reason}.`);
+    },
     ...partial,
   });
 
@@ -395,21 +413,15 @@ const App: React.FC = () => {
           })
         );
         if (!isCurrentOperation(operation.id)) return;
-        setProjects(prev => {
-          const updatedProjects = prev.map(item => item.id === project.id ? {
-            ...item,
-            scenes,
-            sceneStatus: 'success' as const,
-            sceneErrorMessage: undefined,
-            promptItems: [],
-            promptStatus: 'idle' as const,
-            promptErrorMessage: undefined,
-          } : item);
-          let counter = 1;
-          return updatedProjects.map(item => item.scenes.length > 0
-            ? { ...item, scenes: item.scenes.map(scene => ({ ...scene, id: counter++ })) }
-            : item);
-        });
+        setProjects(prev => prev.map(item => item.id === project.id ? {
+          ...item,
+          scenes,
+          sceneStatus: 'success' as const,
+          sceneErrorMessage: undefined,
+          promptItems: [],
+          promptStatus: 'idle' as const,
+          promptErrorMessage: undefined,
+        } : item));
       } catch (error: unknown) {
         if (isCurrentOperation(operation.id)) {
           setProjects(prev => prev.map(item => item.id === project.id
@@ -424,15 +436,24 @@ const App: React.FC = () => {
     };
 
     try {
-      for (let index = 0; index < targets.length; index++) {
-        if (!isCurrentOperation(operation.id)) break;
-        try {
-          await analyzeProject(targets[index], index);
-        } catch {
-          // A failed segment retains any partial scenes and must not block the
-          // following independent segment.
-          continue;
-        }
+      await runWithWorkerPool(
+        targets,
+        operation.speedMode === 'ultra' ? 2 : 1,
+        async (project, index) => {
+          try { await analyzeProject(project, index); } catch { /* retain partial result and continue */ }
+        },
+        {
+          shouldStop: () => !isCurrentOperation(operation.id),
+          shouldReduceToSingleWorker: () => operation.ultraDowngraded,
+        },
+      );
+      if (isCurrentOperation(operation.id)) {
+        setProjects(prev => {
+          let counter = 1;
+          return prev.map(project => project.scenes.length > 0
+            ? { ...project, scenes: project.scenes.map(scene => ({ ...scene, id: counter++ })) }
+            : project);
+        });
       }
     } catch (error: unknown) {
       if (isCurrentOperation(operation.id)) updateOperationProgress(operation, readableError(error));
@@ -574,15 +595,17 @@ const App: React.FC = () => {
     };
 
     try {
-      for (let index = 0; index < targets.length; index++) {
-        if (!isCurrentOperation(operation.id)) break;
-        try {
-          await generateProject(targets[index], index);
-        } catch {
-          // Continue with later segments; completed prompts remain available.
-          continue;
-        }
-      }
+      await runWithWorkerPool(
+        targets,
+        operation.speedMode === 'ultra' ? 2 : 1,
+        async (project, index) => {
+          try { await generateProject(project, index); } catch { /* completed projects remain available */ }
+        },
+        {
+          shouldStop: () => !isCurrentOperation(operation.id),
+          shouldReduceToSingleWorker: () => operation.ultraDowngraded,
+        },
+      );
     } catch (error: unknown) {
       if (isCurrentOperation(operation.id)) updateOperationProgress(operation, readableError(error));
     } finally {
@@ -653,7 +676,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-200">
-      <Header />
+      <Header isOperationActive={operationView !== null} />
 
       {operationView && (
         <aside

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AI_PROVIDERS, ProviderConfig, loadAIProviders } from '../services/geminiService';
+import { SpeedMode } from '../types';
 
 const safeStorageGet = (key: string): string | null => {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -16,12 +17,17 @@ const readStoredArray = <T,>(key: string): T[] => {
   }
 };
 
-const Header: React.FC = () => {
+interface HeaderProps {
+  isOperationActive?: boolean;
+}
+
+const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
   const [isKeyManagerOpen, setIsKeyManagerOpen] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [keyCount, setKeyCount] = useState(0);
 
   const [provider, setProvider] = useState<string>('gemini');
+  const [speedMode, setSpeedMode] = useState<SpeedMode>('fast');
   const [isProviderDropdownOpen, setIsProviderDropdownOpen] = useState(false);
   const [providersState, setProvidersState] = useState<Record<string, ProviderConfig>>(AI_PROVIDERS);
   
@@ -41,6 +47,7 @@ const Header: React.FC = () => {
     const savedProvider = safeStorageGet('app1_ai_provider') || 'gemini';
     const activeProvider = AI_PROVIDERS[savedProvider] ? savedProvider : Object.keys(AI_PROVIDERS)[0] || 'gemini';
     setProvider(activeProvider);
+    setSpeedMode(safeStorageGet('app1_speed_mode') === 'ultra' ? 'ultra' : 'fast');
     
     const config = AI_PROVIDERS[activeProvider];
     if (config) {
@@ -60,6 +67,12 @@ const Header: React.FC = () => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  const handleSpeedModeChange = (mode: SpeedMode) => {
+    if (isOperationActive) return;
+    setSpeedMode(mode);
+    try { localStorage.setItem('app1_speed_mode', mode); } catch { /* storage unavailable */ }
+  };
 
   const handleProviderChange = (pId: string) => {
     setProvider(pId);
@@ -250,6 +263,27 @@ const Header: React.FC = () => {
             </div>
 
             {/* 👉 MỞ RỘNG BỀ NGANG POPUP W-96 */}
+            <div className="flex rounded-xl border border-slate-800 bg-slate-900 p-1 shadow-lg" role="group" aria-label="Tốc độ xử lý AI">
+              <button
+                type="button"
+                onClick={() => handleSpeedModeChange('fast')}
+                disabled={isOperationActive}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${speedMode === 'fast' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'} ${isOperationActive ? 'cursor-not-allowed opacity-60' : ''}`}
+                title="Fast: chạy tuần tự, ổn định nhất"
+              >
+                Fast
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSpeedModeChange('ultra')}
+                disabled={isOperationActive}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${speedMode === 'ultra' ? 'bg-fuchsia-600 text-white' : 'text-slate-400 hover:text-white'} ${isOperationActive ? 'cursor-not-allowed opacity-60' : ''}`}
+                title="Ultra: tối đa 2 request song song trên cùng API key"
+              >
+                Ultra
+              </button>
+            </div>
+
             <div className="relative" ref={dropdownRef}>
               <button 
                 onClick={() => setIsKeyManagerOpen(!isKeyManagerOpen)}

@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Scene, ColorStyle, CharacterIdentity, PromptItem, PromptElement } from "../types";
+import { Scene, ColorStyle, CharacterIdentity, PromptItem, PromptElement, SpeedMode } from "../types";
 import {
   AbortableFIFOLimiter,
   AIHttpError,
@@ -46,6 +46,10 @@ export interface AIOperationOptions {
   onPartialPrompts?: (items: PromptItem[]) => void;
   attemptTimeoutMs?: number;
   maxAttempts?: number;
+  speedMode?: SpeedMode;
+  /** Ultra binds a whole operation to one saved key slot. */
+  keySlot?: number;
+  onConcurrencyDowngrade?: (reason: string) => void;
 }
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
@@ -186,9 +190,11 @@ const getColorDescription = (style: ColorStyle): string => {
   }
 };
 
-type AILane = 'scene' | 'prompt';
-const AI_LIMITER = new AbortableFIFOLimiter(1);
+type AILane = 'scene' | 'prompt' | 'planner';
+const AI_LIMITER = new AbortableFIFOLimiter(2);
+const PLANNER_LIMITER = new AbortableFIFOLimiter(1);
 let nextRequestAt = 0;
+let nextUltraStartAt = 0;
 
 const waitForRequestPace = async (signal?: AbortSignal): Promise<void> => {
   const delay = Math.max(0, nextRequestAt - Date.now());
@@ -207,6 +213,20 @@ const waitForRequestPace = async (signal?: AbortSignal): Promise<void> => {
       signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
+};
+
+const waitForUltraStartStagger = async (signal?: AbortSignal): Promise<void> => {
+  const scheduledAt = Math.max(Date.now(), nextUltraStartAt);
+  nextUltraStartAt = scheduledAt + 250;
+  const delay = Math.max(0, scheduledAt - Date.now());
+  if (delay === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(done, delay);
+    const onAbort = () => { clearTimeout(timer); reject(signal?.reason || new DOMException('Operation cancelled', 'AbortError')); };
+    function done() { signal?.removeEventListener('abort', onAbort); resolve(); }
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 };
 
 const normalizeOperationOptions = (
@@ -499,6 +519,12 @@ const callAISafe = async <T>(
   operationOptions?: AIOperationOptions,
 ): Promise<T> => {
   const options = normalizeOperationOptions(operationOptions, DEFAULT_CALL_TIMEOUT_MS);
+  if (lane === 'planner') {
+    return PLANNER_LIMITER.run(
+      () => callAISafe<T>(contents, systemInstruction, schema, temperature, 'prompt', forcedProviderId, options),
+      { signal: options.signal, deadlineAt: options.deadlineAt },
+    );
+  }
   const providerId = forcedProviderId || options.providerId!;
   const sourceProvider = AI_PROVIDERS[providerId];
   if (!sourceProvider) throw new Error(`[LỖI CẤU HÌNH] Không tìm thấy Model ID '${providerId}'. Vui lòng chọn lại AI.`);
@@ -509,18 +535,19 @@ const callAISafe = async <T>(
   if (keys.length === 0) {
     throw new Error(`[LỖI CẤU HÌNH] BẠN CHƯA CÓ API KEY CHO MODEL: ${providerConfig.name.toUpperCase()}`);
   }
-  const startIndex = Math.min(keyIndexes[providerConfig.id] || 0, keys.length - 1);
-  // Reserve a key synchronously before the first await so consecutive calls
-  // rotate fairly across the configured key pool.
-  keyIndexes[providerConfig.id] = (startIndex + 1) % keys.length;
-  let keyPool = createKeyPoolState(keys, startIndex);
+  const fixedKeySlot = options.keySlot === undefined ? undefined : Math.min(Math.max(0, options.keySlot), keys.length - 1);
+  const startIndex = fixedKeySlot ?? Math.min(keyIndexes[providerConfig.id] || 0, keys.length - 1);
+  // Fast keeps round-robin behavior. Ultra pins the entire operation to one key.
+  if (fixedKeySlot === undefined) keyIndexes[providerConfig.id] = (startIndex + 1) % keys.length;
+  let keyPool = createKeyPoolState(fixedKeySlot === undefined ? keys : [keys[startIndex]], startIndex);
   const workflowDeadline = options.deadlineAt ?? deadlineAfter(DEFAULT_CALL_TIMEOUT_MS);
   const attemptTimeoutMs = Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
   const limiter = AI_LIMITER;
 
   // Queue time is governed by the workflow deadline, not the per-attempt clock.
-  // FIFO admission keeps every provider request serialized and cancellable.
+  // FIFO admission keeps provider requests bounded and cancellable.
   return limiter.run(async () => {
+    if (options.speedMode === 'ultra') await waitForUltraStartStagger(options.signal);
     await waitForRequestPace(options.signal);
     try {
       const callDeadline = Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
@@ -538,6 +565,10 @@ const callAISafe = async <T>(
             : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal);
         } catch (error) {
           const classification = classifyAIError(error);
+          if (options.speedMode === 'ultra' && (classification.kind === 'rate-limit' || classification.kind === 'quota')) {
+            options.onConcurrencyDowngrade?.(classification.kind);
+            nextRequestAt = Math.max(nextRequestAt, Date.now() + Math.max(5_000, classification.retryAfterMs || 0));
+          }
           keyPool = updateKeyState(keyPool, selection.index, classification.keyAction, {
             cooldownMs: classification.retryAfterMs || 0,
           });
@@ -550,6 +581,7 @@ const callAISafe = async <T>(
         attemptTimeoutMs,
         maxAttempts: options.maxAttempts,
         shouldRetry: (classification) => {
+          if (fixedKeySlot !== undefined && (classification.kind === 'rate-limit' || classification.kind === 'quota')) return false;
           if (classification.retryable) return true;
           if (classification.keyAction !== 'disable' && classification.keyAction !== 'cooldown') return false;
           return keyPool.entries.some((entry) => entry.state === 'ready');
@@ -559,7 +591,7 @@ const callAISafe = async <T>(
         },
       });
     } finally {
-      nextRequestAt = Date.now() + CONFIG.REQUEST_GAP_MS;
+      nextRequestAt = Math.max(nextRequestAt, Date.now() + CONFIG.REQUEST_GAP_MS);
     }
   }, { signal: options.signal, deadlineAt: workflowDeadline });
 };
@@ -1402,7 +1434,7 @@ const planVisualsForScenes = async (
       planned = await callAISafe<any[]>(
         `Plan compositions for these scenes:\n${JSON.stringify(payload)}`,
         buildPlannerInstruction(globalContext, ledgerLabels.slice(-25)),
-        PLAN_SCHEMA, 0.6, 'prompt', undefined, plannerOperation
+        PLAN_SCHEMA, 0.6, 'planner', undefined, plannerOperation
       );
     } catch { continue; }                                  // planner là tầng phụ trợ — lỗi thì bỏ qua mẻ này
     if (!Array.isArray(planned)) continue;
@@ -1426,7 +1458,7 @@ const planVisualsForScenes = async (
         });
         const retried = await callAISafe<any[]>(
           `These scenes were assigned compositions that are ALREADY USED elsewhere in the video. Assign each a DIFFERENT form+place (rotate to another form of the subject or another location):\n${JSON.stringify(retryPayload)}`,
-          buildPlannerInstruction(globalContext, usedNow), PLAN_SCHEMA, 0.75, 'prompt', undefined, plannerOperation
+          buildPlannerInstruction(globalContext, usedNow), PLAN_SCHEMA, 0.75, 'planner', undefined, plannerOperation
         );
         if (Array.isArray(retried)) {
           const fixedIds = new Set<number>();
