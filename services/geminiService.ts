@@ -13,6 +13,7 @@ import {
   selectNextKey,
   updateKeyState,
 } from "./aiRuntime";
+import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
 
 export interface ProviderConfig {
   id: string;
@@ -1418,14 +1419,15 @@ const planToDirective = (p: VisualPlan | undefined, hasRequiredChars: boolean): 
 export const extractContextAndCharacters = async (
   rawScript: string,
   aiOptions?: AIOperationOptions,
+  allowFormatRetry = true,
 ): Promise<{ context: string; characters: CharacterIdentity[] }> => {
   if (!rawScript || rawScript.trim().length === 0) return { context: "", characters: [] };
   const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.context);
   try {
     const result = await callAISafe<any>(
-      `SCRIPT:\n"${rawScript}"`, 
+      `SCRIPT:\n"${rawScript}"\n\nReturn one JSON object with exactly these top-level fields: "context" (a non-empty string) and "characters" (an array). Do not use "globalContext".`,
       `Analyze this script.
-1. Extract a DENSE "globalContext" including: Year/Era, Specific Locations, Weather/Lighting variations, Overall Cinematic Atmosphere/Mood, and the core narrative arc. This context MUST anchor the visual consistency of the entire video. The globalContext MUST NOT contain the real name of any public figure (see REAL-PERSON NAME SAFETY) — use the invented substitute name or a generic descriptor instead.
+1. Extract a DENSE "context" including: Year/Era, Specific Locations, Weather/Lighting variations, Overall Cinematic Atmosphere/Mood, and the core narrative arc. This context MUST anchor the visual consistency of the entire video. The context MUST NOT contain the real name of any public figure (see REAL-PERSON NAME SAFETY) — use the invented substitute name or a generic descriptor instead.
 2. Extract all distinct characters/subjects.
 
 ${CELEBRITY_SAFETY_RULE}
@@ -1441,14 +1443,24 @@ CRITICAL RULES:
    1) FACE: age range + gender + facial features + hair + skin (e.g. "middle-aged man, square jaw, short greying hair, tanned skin").
    2) BUILD: height / body build (e.g. "medium height, sturdy build").
    3) CLOTHING: garment type + color (e.g. "charcoal double-breasted suit, white shirt").
-   ABSOLUTELY FORBIDDEN here (this field must NOT identify a real person): any personal name; any role, title, office, rank, or occupation used as identity (president, king, general, minister, senator, CEO, "democratically elected", "leader of ...", "president of Guatemala"); any country or organization named as a title; any famous event, position, or achievement. PHYSICAL LOOK ONLY. NEVER leave this empty — EVERY character, including a narrator/host, gets an invented ordinary appearance (a narrator may appear on screen, and a consistent look is required either way).
+    ABSOLUTELY FORBIDDEN here (this field must NOT identify a real person): any personal name; any role, title, office, rank, or occupation used as identity (president, king, general, minister, senator, CEO, "democratically elected", "leader of ...", "president of Guatemala"); any country or organization named as a title; any famous event, position, or achievement. PHYSICAL LOOK ONLY. NEVER leave this empty for an extracted on-screen character.
 5. For "ethnicity": extract from the script if stated; else INFER from the character's story context (nationality/location/era — e.g. a Guatemalan president → "Guatemalan"); if the story gives NO such context at all, default to "white American" (the videos target American viewers). For "clothing": extract strictly from the script; if not mentioned, leave EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
-      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING, description: "Physical appearance ONLY, comma-separated, ALWAYS FILLED for EVERY character incl. a narrator/host (invent ordinary era/ethnicity-appropriate details when the script is silent — needed for cross-scene consistency): FACE (age, gender, facial features, hair, skin), then BUILD (height/build), then CLOTHING (type + color). NEVER a name, title, office, rank, occupation, country-as-title, or achievement (no 'president', 'general', 'president of Guatemala', 'democratically elected'), and never a real figure's signature features. Never empty." } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
+      { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING, description: "Physical appearance ONLY, comma-separated, ALWAYS FILLED for every extracted on-screen character: FACE (age, gender, facial features, hair, skin), then BUILD (height/build), then CLOTHING (type + color). NEVER a name, title, office, rank, occupation, country-as-title, or achievement (no 'president', 'general', 'president of Guatemala', 'democratically elected'), and never a real figure's signature features. Never empty." } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
       0.4, 'scene', undefined, operation);
+    let normalized;
+    try {
+      normalized = normalizeContextExtraction(result);
+    } catch (error) {
+      if (error instanceof ContextExtractionValidationError && allowFormatRetry) {
+        operation.onProgress?.('AI trả dữ liệu chưa đúng định dạng; đang yêu cầu lại một lần...');
+        return extractContextAndCharacters(rawScript, { ...aiOptions, maxAttempts: 1 }, false);
+      }
+      throw error;
+    }
     updateUsageStats({ scripts: 1 });
 
-    const rawChars: CharacterIdentity[] = (result.characters || [])
+    const rawChars: CharacterIdentity[] = normalized.characters
       .map((c: any, index: number) => ({
         id: `char-${index}-${Date.now()}`, ...c,
         // Lưới chặn cứng: bỏ chức danh/vai trò khỏi mô tả (chống lộ danh tính người thật).
@@ -1506,13 +1518,14 @@ Output strictly valid JSON.`,
     }).map(ensureAppearance);   // 👉 100% có ngoại hình — trống thì code tự dựng mô tả chung
     // 👉 Lọc tên thật khỏi globalContext — context này được bơm vào MỌI system prompt
     // phía sau, để nguyên tên thật là mồi cho AI lặp lại nó ở từng cảnh.
-    const context = scrubRealNames(result.context || "", characters);
+    const context = scrubRealNames(normalized.context, characters);
     return { context, characters };
-  } catch (e: any) {
-    if (e.message.includes("MISSING_") || e.message.includes("[LỖI CẤU HÌNH]")) throw e;
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (message.includes("MISSING_") || message.includes("[LỖI CẤU HÌNH]")) throw e;
     // 👉 Không nuốt lỗi trong im lặng nữa: trước đây trả {context:"", characters:[]} khiến
     // App ghi đè danh bạ nhân vật bằng rỗng mà người dùng không biết → lưới chặn tê liệt.
-    throw new Error(`Trích xuất bối cảnh & nhân vật thất bại: ${e.message || e}`);
+    throw new Error(`Trích xuất bối cảnh & nhân vật thất bại: ${message}`);
   }
 };
 

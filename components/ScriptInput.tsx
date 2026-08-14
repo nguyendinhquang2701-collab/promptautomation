@@ -14,6 +14,7 @@ interface ScriptInputProps {
 
   onExtractContext: (script: string) => void;
   isExtractingContext: boolean;
+  extractionFeedback: { tone: 'success' | 'error'; message: string } | null;
   onAddProject: () => void;
   onRemoveProject: (id: string) => void;
   onUpdateContent: (id: string, content: string) => void;
@@ -44,7 +45,7 @@ interface ScriptInputProps {
 const ScriptInput: React.FC<ScriptInputProps> = ({ 
   projects, rawScript, setRawScript, globalContext, setGlobalContext, 
   customPromptSuffix, setCustomPromptSuffix, 
-  onExtractContext, isExtractingContext,
+  onExtractContext, isExtractingContext, extractionFeedback,
   onAddProject, onRemoveProject, onUpdateContent, onUpdateName, onAnalyze, isAnalyzing,
   styleAnalysis, setStyleAnalysis, styleSummary, setStyleSummary, onAnalyzeStyle, isAnalyzingStyle,
   characters, onUpdateCharacter, onAddCharacter, onRemoveCharacter, onReset, imagePreview, setImagePreview,
@@ -114,9 +115,14 @@ const ScriptInput: React.FC<ScriptInputProps> = ({
                   <h3 className="text-lg font-bold text-indigo-300">Kịch Bản Thô</h3>
               </div>
               <button onClick={() => onExtractContext(rawScript)} disabled={!canExtract || isExtractingContext} className={`text-xs flex items-center gap-2 px-4 py-2 rounded-lg font-bold border transition-all ${!canExtract || isExtractingContext ? 'bg-slate-800/50 text-slate-500 border-slate-700 cursor-not-allowed' : 'bg-indigo-600 text-white border-indigo-500 hover:bg-indigo-500 shadow-lg shadow-indigo-500/20'}`}>
-                {isExtractingContext ? "Đang xử lý kịch bản..." : "Tự Động Trích Xuất Nhân Vật & Bối Cảnh"}
+                {isExtractingContext ? "Đang trích xuất & chia phân đoạn..." : "Trích Xuất Nhân Vật, Bối Cảnh & Chia Phân Đoạn"}
               </button>
             </div>
+            {extractionFeedback && (
+              <p className={`mb-3 text-xs leading-relaxed ${extractionFeedback.tone === 'success' ? 'text-emerald-300' : 'text-amber-300'}`} role="status">
+                {extractionFeedback.message}
+              </p>
+            )}
             
             <textarea value={rawScript} onChange={(e) => setRawScript(e.target.value)} placeholder="Dán toàn bộ kịch bản thô vào đây..." className="w-full flex-1 min-h-[160px] bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all resize-y font-mono text-sm leading-relaxed mb-4"/>
 
