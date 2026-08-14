@@ -57,11 +57,13 @@ export const parseAIJsonResponse = <T>(rawResponse: string): T => {
  * validate every returned item and retry missing IDs.
  */
 export const parseFastCompatibleAIJsonResponse = <T>(rawResponse: string): T => {
+  let strictError: AIJsonParseError | undefined;
   try {
     return parseAIJsonResponse<T>(rawResponse);
-  } catch {
+  } catch (error) {
+    strictError = error instanceof AIJsonParseError ? error : undefined;
     const raw = rawResponse.trim();
-    if (!raw) return [] as T;
+    if (!raw) throw strictError || new AIJsonParseError('EMPTY_RESPONSE', 'AI khÃ´ng tráº£ vá» ná»™i dung. [EMPTY_RESPONSE]');
     const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const candidate = fence?.[1]?.trim() || raw;
     const firstArray = candidate.indexOf('[');
@@ -80,6 +82,6 @@ export const parseFastCompatibleAIJsonResponse = <T>(rawResponse: string): T => 
         try { return JSON.parse(objectCandidate.slice(0, lastObject + 1)) as T; } catch { /* stable fallback below */ }
       }
     }
-    return [] as T;
+    throw strictError || new AIJsonParseError('INVALID_JSON', 'AI tráº£ vá» JSON khÃ´ng há»£p lá»‡. [INVALID_JSON]');
   }
 };

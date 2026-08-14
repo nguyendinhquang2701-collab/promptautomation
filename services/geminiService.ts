@@ -17,6 +17,9 @@ import {
 } from "./aiRuntime";
 import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
 import { AIJsonParseError, parseAIJsonResponse, parseFastCompatibleAIJsonResponse } from "./aiJson";
+import { AIDiagnostic, AIDiagnosticPhase, createDiagnosticId, sanitizeDiagnosticText, sanitizeResponsePreview } from "./aiDiagnostics";
+
+export type { AIDiagnostic } from "./aiDiagnostics";
 
 export interface ProviderConfig {
   id: string;
@@ -55,6 +58,8 @@ export interface AIOperationOptions {
   requestLimiter?: AbortableFIFOLimiter;
   onConcurrencyDowngrade?: (reason: string) => void;
   onRequestActivity?: (delta: 1 | -1) => void;
+  /** Sanitized request lifecycle state for the progress panel and support diagnosis. */
+  onDiagnostic?: (diagnostic: AIDiagnostic) => void;
 }
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
@@ -123,6 +128,8 @@ loadAIProviders();
 const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 10, REQUEST_GAP_MS: 350 };
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
+const FAST_REQUEST_TIMEOUT_MS = 180_000;
+const RESPONSE_BODY_IDLE_TIMEOUT_MS = 45_000;
 const DEFAULT_WORKFLOW_TIMEOUT_MS = {
   context: 180_000,
   analyze: 300_000,
@@ -243,18 +250,35 @@ const normalizeOperationOptions = (
   providerId: options?.providerId || localStorage.getItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0] || 'gemini'),
   deadlineAt: options?.deadlineAt ?? deadlineAfter(workflowTimeoutMs),
   attemptTimeoutMs: options?.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS,
-  maxAttempts: Math.min(
-    options?.speedMode === 'fast' ? 3 : 2,
-    Math.max(1, options?.maxAttempts ?? (options?.speedMode === 'fast' ? 3 : 2)),
-  ),
+  maxAttempts: Math.min(2, Math.max(1, options?.maxAttempts ?? 2)),
 });
 
 const withAuxiliaryPolicy = (options: AIOperationOptions): AIOperationOptions => ({
   ...options,
   ...(options.speedMode === 'fast'
-    ? { maxAttempts: 3 }
+    ? { maxAttempts: 2 }
     : { attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? 30_000, 30_000), maxAttempts: 1 }),
 });
+
+const diagnosticErrorCode = (error: unknown): string => {
+  if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string') {
+    return (error as { code: string }).code;
+  }
+  if (error instanceof AIJsonParseError) return error.code;
+  if (error instanceof Error) return error.name || 'REQUEST_FAILED';
+  return 'REQUEST_FAILED';
+};
+
+const emitDiagnostic = (
+  options: AIOperationOptions,
+  current: AIDiagnostic,
+  phase: AIDiagnosticPhase,
+  patch: Partial<AIDiagnostic> = {},
+): AIDiagnostic => {
+  const next = { ...current, ...patch, phase, updatedAt: Date.now() };
+  options.onDiagnostic?.(next);
+  return next;
+};
 
 // 👉 Trích khối JSON cân bằng (mảng/object) đầu tiên trong chuỗi, tôn trọng
 // chuỗi con và ký tự escape. Trả về phần còn lại nếu chưa đóng ngoặc (để bước
@@ -376,6 +400,7 @@ const executeGeminiAttempt = async <T>(
   temperature: number,
   signal: AbortSignal,
   timeoutMs: number,
+  onDiagnostic?: (phase: AIDiagnosticPhase, patch?: Partial<AIDiagnostic>) => void,
 ): Promise<T> => {
   const ai = new GoogleGenAI({
     apiKey,
@@ -396,6 +421,7 @@ const executeGeminiAttempt = async <T>(
     ],
   };
   if (systemInstruction) configData.systemInstruction = systemInstruction;
+  onDiagnostic?.('waiting_headers');
   const response = await ai.models.generateContent({ model: providerConfig.model, contents, config: configData });
   if (response.usageMetadata) {
     updateUsageStats({
@@ -405,7 +431,15 @@ const executeGeminiAttempt = async <T>(
       calls: 1,
     });
   }
-  return parseAIJsonResponse<T>(response.text || '');
+  const text = response.text || '';
+  onDiagnostic?.('parsing', {
+    outputTokens: response.usageMetadata?.candidatesTokenCount,
+    responseBytes: new TextEncoder().encode(text).byteLength,
+    responsePreview: sanitizeResponsePreview(text),
+  });
+  const parsed = parseAIJsonResponse<T>(text);
+  onDiagnostic?.('validating', { receivedItems: Array.isArray(parsed) ? parsed.length : undefined });
+  return parsed;
 };
 
 const toOpenAIJsonSchema = (schema: any): any => {
@@ -468,6 +502,90 @@ const buildOpenAIMessages = (contents: any, systemInstruction: string | undefine
   return messages;
 };
 
+class AIResponseBodyError extends Error {
+  readonly code: 'BODY_IDLE_TIMEOUT' | 'PROVIDER_RESPONSE_ERROR' | 'REASONING_WITHOUT_CONTENT';
+
+  constructor(code: 'BODY_IDLE_TIMEOUT' | 'PROVIDER_RESPONSE_ERROR' | 'REASONING_WITHOUT_CONTENT', message: string) {
+    super(message);
+    this.name = 'AIResponseBodyError';
+    this.code = code;
+  }
+}
+
+export const readResponseBodyForDiagnostics = async (
+  response: Response,
+  onUpdate: (patch: Partial<AIDiagnostic>) => void,
+  idleTimeoutMs = RESPONSE_BODY_IDLE_TIMEOUT_MS,
+): Promise<{ rawBody: string; bytes: number; firstByteMs?: number; bodyMs: number }> => {
+  const startedAt = Date.now();
+  if (!response.body) {
+    const rawBody = await response.text();
+    const bytes = new TextEncoder().encode(rawBody).byteLength;
+    return { rawBody, bytes, firstByteMs: Date.now() - startedAt, bodyMs: Date.now() - startedAt };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytes = 0;
+  let firstByteMs: number | undefined;
+  let sawDone = false;
+  try {
+    while (true) {
+      const result = await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new AIResponseBodyError(
+          'BODY_IDLE_TIMEOUT',
+          `Máy chủ đã ngừng gửi dữ liệu trong ${Math.round(idleTimeoutMs / 1_000)} giây. [BODY_IDLE_TIMEOUT]`,
+        )), idleTimeoutMs);
+        reader.read().then(
+          (value) => { clearTimeout(timer); resolve(value); },
+          (error) => { clearTimeout(timer); reject(error); },
+        );
+      });
+      if (result.done) break;
+      if (!firstByteMs) firstByteMs = Date.now() - startedAt;
+      bytes += result.value.byteLength;
+      const chunk = decoder.decode(result.value, { stream: true });
+      sawDone ||= /(?:^|\n)\s*data:\s*\[DONE\]\s*(?:\n|$)/.test(`${chunks.join('')}${chunk}`);
+      chunks.push(chunk);
+      onUpdate({ responseBytes: bytes, firstByteMs, bodyMs: Date.now() - startedAt });
+      if (sawDone) {
+        await reader.cancel();
+        break;
+      }
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  chunks.push(decoder.decode());
+  return { rawBody: chunks.join(''), bytes, firstByteMs, bodyMs: Date.now() - startedAt };
+};
+
+const inspectOpenAIResponse = (rawBody: string) => {
+  try {
+    const parsed = JSON.parse(rawBody);
+    const choice = parsed?.choices?.[0];
+    const message = choice?.message;
+    const usage = parsed?.usage;
+    const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens ?? usage?.reasoning_tokens;
+    const outputTokens = usage?.completion_tokens ?? usage?.output_tokens;
+    const reasoningContent = message?.reasoning_content ?? message?.reasoning;
+    const providerError = parsed?.error?.message || (typeof parsed?.error === 'string' ? parsed.error : undefined);
+    return {
+      finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined,
+      reasoningTokens: typeof reasoningTokens === 'number' ? reasoningTokens : undefined,
+      outputTokens: typeof outputTokens === 'number' ? outputTokens : undefined,
+      reasoningContent: typeof reasoningContent === 'string' ? reasoningContent : undefined,
+      providerError: typeof providerError === 'string' ? providerError : undefined,
+    };
+  } catch {
+    return {};
+  }
+};
+
 const executeOpenAIAttempt = async <T>(
   contents: any,
   systemInstruction: string | undefined,
@@ -477,10 +595,12 @@ const executeOpenAIAttempt = async <T>(
   temperature: number,
   signal: AbortSignal,
   fastCompatible = false,
+  onDiagnostic?: (phase: AIDiagnosticPhase, patch?: Partial<AIDiagnostic>) => void,
 ): Promise<T> => {
   const cleanBaseUrl = (providerConfig.baseUrl || '').replace(/\/+$/, '');
   const targetUrl = `${cleanBaseUrl}/chat/completions`;
   const isDeepSeekHost = /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
+  onDiagnostic?.('waiting_headers');
   const response = await fetch(targetUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -497,6 +617,7 @@ const executeOpenAIAttempt = async <T>(
     }),
     signal,
   });
+  onDiagnostic?.('waiting_headers', { status: response.status, contentType: response.headers.get('content-type') || undefined });
 
   if (!response.ok) {
     const textBody = await response.text();
@@ -512,13 +633,32 @@ const executeOpenAIAttempt = async <T>(
     });
   }
 
-  const rawBody = await response.text();
+  onDiagnostic?.('reading_body', { status: response.status, contentType: response.headers.get('content-type') || undefined });
+  const body = await readResponseBodyForDiagnostics(response, (patch) => onDiagnostic?.('reading_body', patch));
+  const rawBody = body.rawBody;
+  const details = inspectOpenAIResponse(rawBody);
+  onDiagnostic?.('parsing', {
+    responseBytes: body.bytes,
+    firstByteMs: body.firstByteMs,
+    bodyMs: body.bodyMs,
+    finishReason: details.finishReason,
+    reasoningTokens: details.reasoningTokens,
+    outputTokens: details.outputTokens,
+    responsePreview: sanitizeResponsePreview(rawBody),
+  });
+  if (details.providerError) {
+    throw new AIResponseBodyError('PROVIDER_RESPONSE_ERROR', `Máy chủ trả lỗi trong HTTP 200: ${details.providerError} [PROVIDER_RESPONSE_ERROR]`);
+  }
   const text = extractOpenAIContent(rawBody);
+  if (!text.trim() && details.reasoningContent) {
+    throw new AIResponseBodyError('REASONING_WITHOUT_CONTENT', 'Model chỉ trả reasoning mà không có nội dung kết quả. [REASONING_WITHOUT_CONTENT]');
+  }
   let parsed = fastCompatible ? parseFastCompatibleAIJsonResponse(text) : parseAIJsonResponse(text);
   if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
     const arrayValues = Object.values(parsed).find((value) => Array.isArray(value));
     parsed = arrayValues || [];
   }
+  onDiagnostic?.('validating', { receivedItems: Array.isArray(parsed) ? parsed.length : undefined });
   return parsed as T;
 };
 
@@ -543,6 +683,19 @@ const callAISafe = async <T>(
   if (!sourceProvider) throw new Error(`[LỖI CẤU HÌNH] Không tìm thấy Model ID '${providerId}'. Vui lòng chọn lại AI.`);
   const providerConfig: ProviderConfig = { ...sourceProvider };
   validateProviderEndpoint(providerConfig);
+  const startedAt = Date.now();
+  let diagnostic: AIDiagnostic = {
+    requestId: createDiagnosticId(),
+    phase: 'queued',
+    startedAt,
+    updatedAt: startedAt,
+    providerName: providerConfig.name,
+    model: providerConfig.model,
+    endpoint: providerConfig.type === 'openai-compatible'
+      ? `${new URL(providerConfig.baseUrl || '').origin}/chat/completions`
+      : 'Google Gemini API',
+  };
+  diagnostic = emitDiagnostic(options, diagnostic, 'queued');
 
   const keys = readProviderKeys(providerConfig);
   if (keys.length === 0) {
@@ -556,7 +709,7 @@ const callAISafe = async <T>(
   const workflowDeadline = options.deadlineAt ?? deadlineAfter(DEFAULT_CALL_TIMEOUT_MS);
   const fastCompatible = options.speedMode === 'fast';
   const attemptTimeoutMs = fastCompatible
-    ? Math.max(1, remainingDeadlineMs(workflowDeadline))
+    ? Math.max(1, Math.min(FAST_REQUEST_TIMEOUT_MS, remainingDeadlineMs(workflowDeadline)))
     : Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
   const limiter = AI_LIMITER;
 
@@ -566,20 +719,28 @@ const callAISafe = async <T>(
     if (options.speedMode === 'ultra' || options.speedMode === 'ultra-max') await waitForUltraStartStagger(options.signal);
     await waitForRequestPace(options.signal);
     try {
-      const callDeadline = fastCompatible ? workflowDeadline : Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
+      const callDeadline = fastCompatible
+        ? Math.min(workflowDeadline, deadlineAfter(FAST_REQUEST_TIMEOUT_MS))
+        : Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
       return await runWithRetry<T>(async ({ attempt, signal, maxAttempts }) => {
         const selected = selectNextKey(keyPool);
         keyPool = selected.state;
         if (!selected.selection) throw new Error(`[LỖI CẤU HÌNH] Không còn API key khả dụng cho ${providerConfig.name}.`);
         const selection = selected.selection;
+        diagnostic = emitDiagnostic(options, diagnostic, 'connecting', { attempt, maxAttempts });
         options.onProgress?.(`Đang gọi ${providerConfig.name} (lượt ${attempt}/${maxAttempts})...`);
 
         options.onRequestActivity?.(1);
         try {
           const transportTimeout = Math.max(1, Math.min(attemptTimeoutMs, remainingDeadlineMs(callDeadline)));
-          return providerConfig.type === 'gemini'
-            ? executeGeminiAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, transportTimeout)
-            : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, fastCompatible);
+          const result = providerConfig.type === 'gemini'
+            ? executeGeminiAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, transportTimeout,
+              (phase, patch) => { diagnostic = emitDiagnostic(options, diagnostic, phase, patch); })
+            : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, fastCompatible,
+              (phase, patch) => { diagnostic = emitDiagnostic(options, diagnostic, phase, patch); });
+          const resolved = await result;
+          diagnostic = emitDiagnostic(options, diagnostic, 'completed');
+          return resolved;
         } catch (error) {
           const classification = classifyAIError(error);
           const isParallelMode = options.speedMode === 'ultra' || options.speedMode === 'ultra-max';
@@ -610,9 +771,22 @@ const callAISafe = async <T>(
           return keyPool.entries.some((entry) => entry.state === 'ready');
         },
         onRetry: (classification, _error, context) => {
+          diagnostic = emitDiagnostic(options, diagnostic, 'retry_backoff', {
+            attempt: context.attempt,
+            maxAttempts: context.maxAttempts,
+            errorCode: classification.kind,
+            errorMessage: sanitizeDiagnosticText(_error instanceof Error ? _error.message : String(_error)),
+          });
           options.onProgress?.(`${providerConfig.name} lỗi ${classification.kind}; thử lại lần ${context.attempt + 1}/${context.maxAttempts}...`);
         },
       });
+    } catch (error) {
+      diagnostic = emitDiagnostic(options, diagnostic, 'failed', {
+        errorCode: diagnosticErrorCode(error),
+        errorMessage: sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)),
+        status: error instanceof AIHttpError ? error.status : diagnostic.status,
+      });
+      throw error;
     } finally {
       nextRequestAt = Math.max(nextRequestAt, Date.now() + CONFIG.REQUEST_GAP_MS);
     }
