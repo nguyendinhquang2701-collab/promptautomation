@@ -16,7 +16,7 @@ import {
   updateKeyState,
 } from "./aiRuntime";
 import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
-import { AIJsonParseError, parseAIJsonResponse } from "./aiJson";
+import { AIJsonParseError, parseAIJsonResponse, parseFastCompatibleAIJsonResponse } from "./aiJson";
 
 export interface ProviderConfig {
   id: string;
@@ -243,13 +243,17 @@ const normalizeOperationOptions = (
   providerId: options?.providerId || localStorage.getItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0] || 'gemini'),
   deadlineAt: options?.deadlineAt ?? deadlineAfter(workflowTimeoutMs),
   attemptTimeoutMs: options?.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS,
-  maxAttempts: Math.min(2, Math.max(1, options?.maxAttempts ?? 2)),
+  maxAttempts: Math.min(
+    options?.speedMode === 'fast' ? 3 : 2,
+    Math.max(1, options?.maxAttempts ?? (options?.speedMode === 'fast' ? 3 : 2)),
+  ),
 });
 
 const withAuxiliaryPolicy = (options: AIOperationOptions): AIOperationOptions => ({
   ...options,
-  attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? 30_000, 30_000),
-  maxAttempts: 1,
+  ...(options.speedMode === 'fast'
+    ? { maxAttempts: 3 }
+    : { attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? 30_000, 30_000), maxAttempts: 1 }),
 });
 
 // 👉 Trích khối JSON cân bằng (mảng/object) đầu tiên trong chuỗi, tôn trọng
@@ -472,6 +476,7 @@ const executeOpenAIAttempt = async <T>(
   apiKey: string,
   temperature: number,
   signal: AbortSignal,
+  fastCompatible = false,
 ): Promise<T> => {
   const cleanBaseUrl = (providerConfig.baseUrl || '').replace(/\/+$/, '');
   const targetUrl = `${cleanBaseUrl}/chat/completions`;
@@ -483,10 +488,12 @@ const executeOpenAIAttempt = async <T>(
       model: providerConfig.model,
       messages: buildOpenAIMessages(contents, systemInstruction, schema),
       temperature,
-      max_tokens: 8192,
-      stream: false,
-      ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {}),
-      ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
+      ...(fastCompatible ? {} : {
+        max_tokens: 8192,
+        stream: false,
+        ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {}),
+        ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
+      }),
     }),
     signal,
   });
@@ -507,7 +514,7 @@ const executeOpenAIAttempt = async <T>(
 
   const rawBody = await response.text();
   const text = extractOpenAIContent(rawBody);
-  let parsed = parseAIJsonResponse(text);
+  let parsed = fastCompatible ? parseFastCompatibleAIJsonResponse(text) : parseAIJsonResponse(text);
   if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
     const arrayValues = Object.values(parsed).find((value) => Array.isArray(value));
     parsed = arrayValues || [];
@@ -547,7 +554,10 @@ const callAISafe = async <T>(
   if (fixedKeySlot === undefined) keyIndexes[providerConfig.id] = (startIndex + 1) % keys.length;
   let keyPool = createKeyPoolState(fixedKeySlot === undefined ? keys : [keys[startIndex]], startIndex);
   const workflowDeadline = options.deadlineAt ?? deadlineAfter(DEFAULT_CALL_TIMEOUT_MS);
-  const attemptTimeoutMs = Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
+  const fastCompatible = options.speedMode === 'fast';
+  const attemptTimeoutMs = fastCompatible
+    ? Math.max(1, remainingDeadlineMs(workflowDeadline))
+    : Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
   const limiter = AI_LIMITER;
 
   // Queue time is governed by the workflow deadline, not the per-attempt clock.
@@ -556,7 +566,7 @@ const callAISafe = async <T>(
     if (options.speedMode === 'ultra' || options.speedMode === 'ultra-max') await waitForUltraStartStagger(options.signal);
     await waitForRequestPace(options.signal);
     try {
-      const callDeadline = Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
+      const callDeadline = fastCompatible ? workflowDeadline : Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
       return await runWithRetry<T>(async ({ attempt, signal, maxAttempts }) => {
         const selected = selectNextKey(keyPool);
         keyPool = selected.state;
@@ -569,7 +579,7 @@ const callAISafe = async <T>(
           const transportTimeout = Math.max(1, Math.min(attemptTimeoutMs, remainingDeadlineMs(callDeadline)));
           return providerConfig.type === 'gemini'
             ? executeGeminiAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, transportTimeout)
-            : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal);
+            : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, fastCompatible);
         } catch (error) {
           const classification = classifyAIError(error);
           const isParallelMode = options.speedMode === 'ultra' || options.speedMode === 'ultra-max';
@@ -1655,8 +1665,9 @@ export const analyzeSingleSegmentToScenes = async (
     
     let pendingIndices = batchTexts.map((_, i) => i);
     let loopCount = 0;
+    const maxBatchLoops = operation.speedMode === 'fast' ? 3 : 2;
 
-    while (pendingIndices.length > 0 && loopCount < 2) {   // (Sửa hiệu năng) 3→2 vòng
+    while (pendingIndices.length > 0 && loopCount < maxBatchLoops) {
       loopCount++;
       const promptTexts = pendingIndices.map(i => `[ID: ${i + 1}] "${batchTexts[i]}"`).join('\n');
       
@@ -1701,14 +1712,18 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
             // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ/bạo lực/đám đông) — dính thì tạo lại,
             // trừ vòng cuối (chấp nhận để không kẹt cả đoạn).
             const bannedHit = findBannedVisual(`${validScenes[idx].visualDescription} ${validScenes[idx].settingTime}`);
-            if (validScenes[idx].visualDescription !== "" && (!bannedHit || loopCount >= 2)) {
+            if (validScenes[idx].visualDescription !== "" && (!bannedHit || loopCount >= maxBatchLoops)) {
                successfulIds.push(idx);
             }
           }
         }
         pendingIndices = pendingIndices.filter(i => !successfulIds.includes(i));
       } 
-      catch (e: any) { throw e; }
+      catch (e: any) {
+        const kind = classifyAIError(e).kind;
+        if (operation.speedMode === 'fast' && loopCount < maxBatchLoops && kind !== 'authentication' && kind !== 'client') continue;
+        throw e;
+      }
     }
     
     return { index, chunkScenes: validScenes };
@@ -1951,7 +1966,8 @@ ${techDetailsStr}
 ${options?.audioMode !== 'keep' ? 'AUDIO: describe visuals only — no dialogue, no on-screen text, no music.' : ''}
 Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese.`;
 
-  const batches = splitIntoBatches(segment.scenes, CONFIG.PROMPT_BATCH_SIZE);
+  const promptBatchSize = operation.speedMode === 'fast' ? 5 : CONFIG.PROMPT_BATCH_SIZE;
+  const batches = splitIntoBatches(segment.scenes, promptBatchSize);
   const shouldSplitPromptBatch = (error: unknown, batch: Scene[]) => {
     if (batch.length <= 2) return false;
     const message = error instanceof Error ? error.message : String(error);
@@ -1987,6 +2003,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
     const processBatch = async (batch: Scene[], index: number): Promise<PromptItem[]> => {
       let pendingBatch = batch;
       let batchLoop = 0;
+      const maxBatchLoops = operation.speedMode === 'fast' ? 3 : 2;
       const validItems: PromptItem[] = [];
 
       const charIndex = buildCharacterIndex(characters);
@@ -2077,7 +2094,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
       // (Sửa hiệu năng) Trần vòng lặp mẻ 3→2: nếu output trượt lưới thì thử lại nhiều nhất
       // 1 lần nữa rồi chấp nhận/đẩy xuống cứu hộ — cắt nửa số call thừa. Nhánh cứu hộ batch=1
       // phía dưới vẫn vá được cảnh sót nên không mất cảnh nào.
-      while (pendingBatch.length > 0 && batchLoop < 2) {
+      while (pendingBatch.length > 0 && batchLoop < maxBatchLoops) {
         batchLoop++;
         try {
           const payload = pendingBatch.map(makePayload);
@@ -2090,12 +2107,12 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           for (const pi of generated) {
             const scene = pendingBatch.find(s => s.id === pi.sceneId);
             if (!scene) continue;
-            if (!hasAllRequiredFields(pi) && batchLoop < 2) continue;
+            if (!hasAllRequiredFields(pi) && batchLoop < maxBatchLoops) continue;
 
             const assembled = assembleFinalPrompt(pi);
             const required = detectPresentChars(scene);
             const verdict = validateNameAndRichness(assembled, required);
-            if (!verdict.ok && batchLoop < 2) {
+            if (!verdict.ok && batchLoop < maxBatchLoops) {
               continue;
             }
 
@@ -2105,6 +2122,8 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
 
           pendingBatch = pendingBatch.filter(s => !acceptedIds.includes(s.id));
         } catch (e: any) {
+          const kind = classifyAIError(e).kind;
+          if (operation.speedMode === 'fast' && batchLoop < maxBatchLoops && kind !== 'authentication' && kind !== 'client') continue;
           throw new Error(`Mẻ ${index + 1} thất bại: ${e.message || e}`);
         }
       }
@@ -2117,7 +2136,8 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
         const stillPending: Scene[] = [];
         for (const scene of pendingBatch) {
           let rescued = false;
-          for (let attempt = 0; attempt < 1 && !rescued; attempt++) {
+          const maxRescueAttempts = operation.speedMode === 'fast' ? 2 : 1;
+          for (let attempt = 0; attempt < maxRescueAttempts && !rescued; attempt++) {
             try {
               const generated = await callAISafe<any[]>(
                 `Generate structured prompts for:\n${JSON.stringify([makePayload(scene)])}\n`,

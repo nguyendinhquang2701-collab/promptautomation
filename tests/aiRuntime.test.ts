@@ -20,8 +20,8 @@ test('prompt-sized batches keep ordering and cap each request at ten scenes', ()
   assert.deepEqual(batches.flat(), Array.from({ length: 17 }, (_, index) => index + 1));
 });
 
-test('retry policy is capped at two attempts', async () => {
-  assert.equal(normalizeMaxAttempts(99), 2);
+test('retry policy is capped at three attempts', async () => {
+  assert.equal(normalizeMaxAttempts(99), 3);
   let calls = 0;
 
   await assert.rejects(
@@ -35,7 +35,7 @@ test('retry policy is capped at two attempts', async () => {
     (error: unknown) => error instanceof AIHttpError && error.status === 503,
   );
 
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
 });
 
 test('client and authentication errors are never retried', async () => {

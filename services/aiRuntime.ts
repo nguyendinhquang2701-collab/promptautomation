@@ -357,7 +357,7 @@ export const sleepAbortable = (ms: number, signal?: AbortSignal): Promise<void> 
 
 export interface RetryAttemptContext {
   attempt: number;
-  maxAttempts: 1 | 2;
+  maxAttempts: 1 | 2 | 3;
   signal: AbortSignal;
   deadlineAt?: number;
 }
@@ -366,7 +366,7 @@ export interface RetryOptions {
   signal?: AbortSignal;
   deadlineAt?: number;
   attemptTimeoutMs?: number;
-  /** Values above two are intentionally clamped to two. */
+  /** Values above three are intentionally clamped to three. */
   maxAttempts?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
@@ -385,10 +385,10 @@ export interface RetryOptions {
   random?: () => number;
 }
 
-export const normalizeMaxAttempts = (value: number | undefined): 1 | 2 =>
-  value !== undefined && value <= 1 ? 1 : DEFAULT_MAX_ATTEMPTS;
+export const normalizeMaxAttempts = (value: number | undefined): 1 | 2 | 3 =>
+  value !== undefined && value <= 1 ? 1 : value !== undefined && value >= 3 ? 3 : DEFAULT_MAX_ATTEMPTS;
 
-/** A deadline-aware retry loop with a hard ceiling of two attempts. */
+/** A deadline-aware retry loop with a hard ceiling of three attempts. */
 export const runWithRetry = async <T>(
   operation: (context: RetryAttemptContext) => Promise<T>,
   options: RetryOptions = {},

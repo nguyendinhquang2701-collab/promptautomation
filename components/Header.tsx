@@ -295,7 +295,7 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
                 <div role="menu" className="absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 p-1 shadow-2xl">
                   <button type="button" role="menuitem" onClick={() => handleSpeedModeChange('fast')} className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${speedMode === 'fast' ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-300 hover:bg-slate-700'}`}>
                     <span className="mt-0.5 text-indigo-400">{speedMode === 'fast' ? '✓' : '○'}</span>
-                    <span><span className="block text-xs font-bold">Fast</span><span className="block text-[10px] text-slate-400">1 luồng · ổn định nhất</span></span>
+                    <span><span className="block text-xs font-bold">Fast</span><span className="block text-[10px] text-slate-400">1 luồng · tương thích API cao</span></span>
                   </button>
                   <button type="button" role="menuitem" onClick={() => handleSpeedModeChange('ultra')} className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${speedMode === 'ultra' ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'text-slate-300 hover:bg-slate-700'}`}>
                     <span className="mt-0.5 text-fuchsia-400">{speedMode === 'ultra' ? '✓' : '○'}</span>
