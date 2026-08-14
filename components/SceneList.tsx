@@ -6,8 +6,6 @@ interface SceneListProps {
   onBack: () => void;
   onGeneratePrompts: () => void;
   isGenerating: boolean;
-  useParallel: boolean;
-  setUseParallel: (val: boolean) => void;
   onRetryAnalyze: (id: string) => void;
   onRepairScenes: (id: string) => void;
 }
@@ -17,8 +15,6 @@ const SceneList: React.FC<SceneListProps> = ({
   onBack, 
   onGeneratePrompts, 
   isGenerating,
-  useParallel,
-  setUseParallel,
   onRetryAnalyze,
   onRepairScenes
 }) => {

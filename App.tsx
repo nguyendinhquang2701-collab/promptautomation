@@ -9,7 +9,6 @@ import { createDefaultProject, hydrateProjectsWithReport, serializeProjects } fr
 import { splitRawScriptIntoSegments } from './state/scriptSegmentation';
 
 type OperationKind = 'context' | 'style' | 'analyze' | 'prompt' | 'repair';
-type ApiTier = 'free' | 'paid';
 
 interface ActiveOperation {
   id: string;
@@ -17,7 +16,6 @@ interface ActiveOperation {
   title: string;
   providerId: string;
   providerName: string;
-  apiTier: ApiTier;
   startedAt: number;
   deadlineAt: number;
   controller: AbortController;
@@ -28,7 +26,6 @@ interface OperationView {
   id: string;
   title: string;
   providerName: string;
-  apiTier: ApiTier;
   startedAt: number;
   deadlineAt: number;
   progress: string;
@@ -45,6 +42,17 @@ const OPERATION_DEADLINES: Record<OperationKind, number> = {
   analyze: 8 * 60_000,
   prompt: 12 * 60_000,
   repair: 5 * 60_000,
+};
+const MAX_OPERATION_DEADLINE_MS = 60 * 60_000;
+
+const estimateWorkflowDeadline = (kind: 'analyze' | 'prompt', targets: ScriptProject[]): number => {
+  const estimatedBatches = kind === 'analyze'
+    ? targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.content.length / 1_200)), 0)
+    : targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.scenes.length / 5) + 1), 0);
+  return Math.min(
+    MAX_OPERATION_DEADLINE_MS,
+    Math.max(OPERATION_DEADLINES[kind], 120_000 + estimatedBatches * 120_000),
+  );
 };
 
 const cancelledMessage = (timedOut: boolean) => timedOut
@@ -70,6 +78,10 @@ const safeSetItem = (key: string, value: string): void => {
   }
 };
 
+const safeRemoveItem = (key: string): void => {
+  try { localStorage.removeItem(key); } catch { /* storage is unavailable */ }
+};
+
 const readStoredJSON = <T,>(key: string, fallback: T): T => {
   const raw = safeGetItem(key);
   if (!raw) return fallback;
@@ -83,7 +95,6 @@ const App: React.FC = () => {
   const [contextLoading, setContextLoading] = useState(false);
   const [contextExtractionFeedback, setContextExtractionFeedback] = useState<ContextExtractionFeedback | null>(null);
   const [styleLoading, setStyleLoading] = useState(false);
-  const [useParallel, setUseParallel] = useState(true);
   const activeOperationRef = useRef<ActiveOperation | null>(null);
   const [operationView, setOperationView] = useState<OperationView | null>(null);
   const [operationClock, setOperationClock] = useState(() => Date.now());
@@ -117,6 +128,12 @@ const App: React.FC = () => {
     if (raw && restored.hadCorruption) safeSetItem('app1_projects_recovery', raw);
     return restored.projects;
   });
+
+  useEffect(() => {
+    // Previous versions exposed a free/paid toggle. The runtime now uses one
+    // conservative policy for every API, so the obsolete preference is removed.
+    safeRemoveItem('app1_api_tier');
+  }, []);
 
   useEffect(() => {
     safeSetItem('app1_appState', appState);
@@ -191,7 +208,7 @@ const App: React.FC = () => {
     }
   };
 
-  const beginOperation = (kind: OperationKind, title: string): ActiveOperation | null => {
+  const beginOperation = (kind: OperationKind, title: string, deadlineMs = OPERATION_DEADLINES[kind]): ActiveOperation | null => {
     if (activeOperationRef.current) {
       alert('Một tác vụ khác đang chạy. Hãy chờ hoàn tất hoặc bấm Hủy tác vụ trước.');
       return null;
@@ -199,20 +216,18 @@ const App: React.FC = () => {
     const selectedProviderId = safeGetItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0]) || 'gemini';
     const provider = AI_PROVIDERS[selectedProviderId] || AI_PROVIDERS[Object.keys(AI_PROVIDERS)[0]];
     const providerId = provider?.id || selectedProviderId;
-    const savedTier = safeGetItem('app1_api_tier');
-    const apiTier: ApiTier = savedTier === 'paid' ? 'paid' : 'free';
     const startedAt = Date.now();
-    const deadlineAt = startedAt + OPERATION_DEADLINES[kind];
+    const effectiveDeadlineMs = Math.min(MAX_OPERATION_DEADLINE_MS, Math.max(OPERATION_DEADLINES[kind], deadlineMs));
+    const deadlineAt = startedAt + effectiveDeadlineMs;
     const id = globalThis.crypto?.randomUUID?.() || `${startedAt}-${Math.random().toString(36).slice(2)}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => stopActiveOperation(id, true), OPERATION_DEADLINES[kind]);
+    const timer = setTimeout(() => stopActiveOperation(id, true), effectiveDeadlineMs);
     const operation: ActiveOperation = {
       id,
       kind,
       title,
       providerId,
       providerName: provider?.name || 'AI',
-      apiTier,
       startedAt,
       deadlineAt,
       controller,
@@ -223,7 +238,6 @@ const App: React.FC = () => {
       id,
       title,
       providerName: operation.providerName,
-      apiTier,
       startedAt,
       deadlineAt,
       progress: 'Đang chuẩn bị dữ liệu...',
@@ -236,14 +250,18 @@ const App: React.FC = () => {
     setOperationView(prev => prev?.id === operation.id ? { ...prev, progress } : prev);
   };
 
-  const operationOptions = (operation: ActiveOperation, prefix = ''): AIOperationOptions => ({
+  const operationOptions = (
+    operation: ActiveOperation,
+    prefix = '',
+    partial: Pick<AIOperationOptions, 'onPartialScenes' | 'onPartialPrompts'> = {},
+  ): AIOperationOptions => ({
     signal: operation.controller.signal,
     deadlineAt: operation.deadlineAt,
     providerId: operation.providerId,
-    apiTier: operation.apiTier,
     attemptTimeoutMs: 60_000,
     maxAttempts: 2,
     onProgress: (message) => updateOperationProgress(operation, prefix ? `${prefix} • ${message}` : message),
+    ...partial,
   });
 
   const finishOperation = (operation: ActiveOperation, unfinishedMessage: string) => {
@@ -345,7 +363,7 @@ const App: React.FC = () => {
 
   const runAnalyzeOperation = async (targets: ScriptProject[], title: string, navigateToReview: boolean) => {
     if (!requireApiKey() || targets.length === 0) return;
-    const operation = beginOperation('analyze', title);
+    const operation = beginOperation('analyze', title, estimateWorkflowDeadline('analyze', targets));
     if (!operation) return;
     const targetIds = new Set(targets.map(project => project.id));
     setLoading(true);
@@ -364,7 +382,18 @@ const App: React.FC = () => {
           globalContext,
           promptOptions,
           characters,
-          operationOptions(operation, project.name)
+          operationOptions(operation, project.name, {
+            onPartialScenes: (partialScenes) => {
+              if (!isCurrentOperation(operation.id)) return;
+              setProjects(prev => prev.map(item => item.id === project.id ? {
+                ...item,
+                scenes: partialScenes,
+                sceneStatus: 'loading' as const,
+                promptItems: [],
+                promptStatus: 'idle' as const,
+              } : item));
+            },
+          })
         );
         if (!isCurrentOperation(operation.id)) return;
         setProjects(prev => {
@@ -396,17 +425,15 @@ const App: React.FC = () => {
     };
 
     try {
-      if (operation.apiTier === 'free') {
-        for (let index = 0; index < targets.length; index++) {
-          if (!isCurrentOperation(operation.id)) break;
-          try {
-            await analyzeProject(targets[index], index);
-          } catch {
-            break;
-          }
+      for (let index = 0; index < targets.length; index++) {
+        if (!isCurrentOperation(operation.id)) break;
+        try {
+          await analyzeProject(targets[index], index);
+        } catch {
+          // A failed segment retains any partial scenes and must not block the
+          // following independent segment.
+          continue;
         }
-      } else {
-        await Promise.allSettled(targets.map((project, index) => analyzeProject(project, index)));
       }
     } catch (error: unknown) {
       if (isCurrentOperation(operation.id)) updateOperationProgress(operation, readableError(error));
@@ -477,7 +504,7 @@ const App: React.FC = () => {
 
   const runPromptOperation = async (targets: ScriptProject[], title: string, navigateToResult: boolean) => {
     if (!requireApiKey() || targets.length === 0) return;
-    const operation = beginOperation('prompt', title);
+    const operation = beginOperation('prompt', title, estimateWorkflowDeadline('prompt', targets));
     if (!operation) return;
     const targetIds = new Set(targets.map(project => project.id));
     setLoading(true);
@@ -487,7 +514,7 @@ const App: React.FC = () => {
       ...project,
       promptStatus: 'loading',
       promptErrorMessage: undefined,
-      loadingMessage: operation.apiTier === 'free' ? 'Đang xếp hàng chờ đến lượt...' : 'Đang chuẩn bị tạo prompt...',
+      loadingMessage: 'Đang chuẩn bị tạo prompt...',
       rescueProvider: undefined,
     } : project));
 
@@ -510,7 +537,17 @@ const App: React.FC = () => {
           setProjectProgress,
           customPromptSuffix,
           promptOptions,
-          operationOptions(operation, project.name)
+          operationOptions(operation, project.name, {
+            onPartialPrompts: (partialItems) => {
+              if (!isCurrentOperation(operation.id)) return;
+              setProjects(prev => prev.map(item => item.id === project.id ? {
+                ...item,
+                promptItems: partialItems,
+                promptStatus: 'loading' as const,
+                loadingMessage: 'Đã lưu prompt theo từng mẻ...',
+              } : item));
+            },
+          })
         );
         if (!isCurrentOperation(operation.id)) return;
         setProjects(prev => prev.map(item => item.id === project.id ? {
@@ -538,17 +575,14 @@ const App: React.FC = () => {
     };
 
     try {
-      if (operation.apiTier === 'free') {
-        for (let index = 0; index < targets.length; index++) {
-          if (!isCurrentOperation(operation.id)) break;
-          try {
-            await generateProject(targets[index], index);
-          } catch {
-            break;
-          }
+      for (let index = 0; index < targets.length; index++) {
+        if (!isCurrentOperation(operation.id)) break;
+        try {
+          await generateProject(targets[index], index);
+        } catch {
+          // Continue with later segments; completed prompts remain available.
+          continue;
         }
-      } else {
-        await Promise.allSettled(targets.map((project, index) => generateProject(project, index)));
       }
     } catch (error: unknown) {
       if (isCurrentOperation(operation.id)) updateOperationProgress(operation, readableError(error));
@@ -575,8 +609,6 @@ const App: React.FC = () => {
     }
     if (window.confirm("Làm mới dự án? Màn hình này sẽ được xóa sạch để làm kịch bản mới.")) {
         const provider = localStorage.getItem('app1_ai_provider');
-        const apiTier = localStorage.getItem('app1_api_tier');
-
         const customProviders = localStorage.getItem('app1_custom_providers');
 
         // 👉 GIỮ LẠI MÃ KÍCH HOẠT khi "Xóa Trắng" — đã nhập mã rồi thì không bao giờ
@@ -599,8 +631,6 @@ const App: React.FC = () => {
         if(license) localStorage.setItem('app1_license', license);
 
         if(provider) localStorage.setItem('app1_ai_provider', provider);
-        if(apiTier) localStorage.setItem('app1_api_tier', apiTier);
-
         if(customProviders) localStorage.setItem('app1_custom_providers', customProviders);
         if(promptElements) localStorage.setItem('app1_prompt_elements', promptElements);
         if(maxPromptChars) localStorage.setItem('app1_prompt_max_chars', maxPromptChars);
@@ -639,7 +669,7 @@ const App: React.FC = () => {
               <p className="mt-1 break-words text-sm text-indigo-300">{operationView.progress}</p>
               <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-slate-400">
                 <span>{operationView.providerName}</span>
-                <span>{operationView.apiTier === 'paid' ? 'Gói trả phí' : 'Gói miễn phí'}</span>
+                <span>Chế độ ổn định · 1 yêu cầu mỗi lần</span>
                 <span>Đã chạy {formatDuration((operationClock - operationView.startedAt) / 1000)}</span>
                 <span>Còn tối đa {formatDuration((operationView.deadlineAt - operationClock) / 1000)}</span>
               </div>
@@ -696,8 +726,6 @@ const App: React.FC = () => {
               onBack={() => setAppState(AppState.INPUT)} 
               onGeneratePrompts={handleGeneratePrompts} 
               isGenerating={loading} 
-              useParallel={useParallel} 
-              setUseParallel={setUseParallel} 
               onRetryAnalyze={handleRetryAnalyze}
               onRepairScenes={handleRepairScenes} 
             />
