@@ -11,7 +11,9 @@
 //     durationMs = -1 => vĩnh viễn (không đặt expiresAt).
 //   - So hạn theo GIỜ SERVER (neo bằng performance.now, KHÔNG dùng Date.now)
 //     => khách chỉnh đồng hồ máy vô ích.
-//   - Firebase để MỞ (không cần secret) cho đơn giản; client ghi trực tiếp.
+//   - LEGACY/THỬ NỘI BỘ: client hiện còn ghi Firebase trực tiếp. Cơ chế này không
+//     chống giả mạo license và KHÔNG được xem là an toàn cho sản phẩm trả phí.
+//     Xem LICENSE_SETUP.md trước khi triển khai.
 // ============================================================================
 
 const DB_BASE = "https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app";
@@ -133,22 +135,25 @@ export class NetworkError extends Error {}
 const fetchJSON = async (url: string, opts: RequestInit = {}, ms = 15000): Promise<any> => {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
-  let resp: Response;
   try {
-    resp = await fetch(url, {
+    const resp = await fetch(url, {
       ...opts,
       signal: ctrl.signal,
       headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     });
-  } catch {
-    clearTimeout(t);
+    if (!resp.ok) throw new NetworkError('http ' + resp.status);
+
+    // Giữ timeout hoạt động cho TOÀN BỘ vòng đời response. Nếu server đã gửi
+    // headers nhưng giữ body lửng, AbortController vẫn cắt được resp.text().
+    const text = await resp.text();
+    if (!text || text === 'null') return null;
+    try { return JSON.parse(text); } catch { throw new NetworkError('bad-json'); }
+  } catch (error) {
+    if (error instanceof NetworkError) throw error;
     throw new NetworkError('network');
+  } finally {
+    clearTimeout(t);
   }
-  clearTimeout(t);
-  if (!resp.ok) throw new NetworkError('http ' + resp.status);
-  const text = await resp.text();
-  if (!text || text === 'null') return null;
-  try { return JSON.parse(text); } catch { throw new NetworkError('bad-json'); }
 };
 
 // Đọc bản ghi mã. null nếu không tồn tại. Ném NetworkError nếu lỗi mạng.

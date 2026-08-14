@@ -1,5 +1,18 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Scene, ColorStyle, CharacterIdentity, PromptItem, PromptElement } from "../types";
+import {
+  AbortableFIFOLimiter,
+  AIHttpError,
+  classifyAIError,
+  createKeyPoolState,
+  deadlineAfter,
+  normalizeApiKeys,
+  parseRetryAfterMs,
+  remainingDeadlineMs,
+  runWithRetry,
+  selectNextKey,
+  updateKeyState,
+} from "./aiRuntime";
 
 export interface ProviderConfig {
   id: string;
@@ -14,11 +27,21 @@ export interface ProviderConfig {
 export interface PromptOptions {
   splitLogic?: string;
   audioMode?: 'remove' | 'keep';
-  // 👉 Bước 2.5 — Visual Planner (chống lặp bố cục xuyên mẻ/phân đoạn). Mặc định BẬT.
+  // 👉 Bước 2.5 — Visual Planner (chống lặp bố cục). Mặc định paid=BẬT, free=TẮT.
   visualPlanner?: boolean;
   // 👉 Bước 3.5 — Audit pass (soi lại prompt đã lắp ráp, lỗi Nặng thì tự viết lại).
   // Không set → tự theo gói: paid BẬT, free TẮT (tiết kiệm lượt gọi khi bị giới hạn).
   auditPass?: boolean;
+}
+
+export interface AIOperationOptions {
+  signal?: AbortSignal;
+  deadlineAt?: number;
+  providerId?: string;
+  apiTier?: 'free' | 'paid';
+  onProgress?: (message: string) => void;
+  attemptTimeoutMs?: number;
+  maxAttempts?: number;
 }
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
@@ -28,6 +51,22 @@ export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
   deepseek: { id: 'deepseek', name: 'Deepseek V4', type: 'openai-compatible', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com/v1', keyPrefix: 'deepseek', group: 'Deepseek' },
   grok: { id: 'grok', name: 'Grok 4.1', type: 'openai-compatible', model: 'grok-4-1-fast-reasoning', baseUrl: 'https://api.x.ai/v1', keyPrefix: 'grok', group: 'xAI' },
   mistral: { id: 'mistral', name: 'Mistral Large', type: 'openai-compatible', model: 'mistral-large-latest', baseUrl: 'https://api.mistral.ai/v1', keyPrefix: 'mistral', group: 'Mistral' }
+};
+
+const getProviderEndpointError = (providerConfig: ProviderConfig): string | null => {
+  if (providerConfig.type === 'gemini') return null;
+  let url: URL;
+  try {
+    url = new URL((providerConfig.baseUrl || '').trim());
+  } catch {
+    return 'Base URL không hợp lệ.';
+  }
+  if (url.username || url.password) return 'Base URL không được chứa username/password.';
+  if (url.protocol === 'https:') return null;
+  const localHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+  const targetIsLocal = url.protocol === 'http:' && localHosts.has(url.hostname);
+  const pageIsLocal = typeof window !== 'undefined' && localHosts.has(window.location.hostname);
+  return targetIsLocal && pageIsLocal ? null : 'Base URL bắt buộc dùng HTTPS.';
 };
 
 export const AI_PROVIDERS: Record<string, ProviderConfig> = {};
@@ -58,17 +97,8 @@ export const loadAIProviders = () => {
             });
             if (migrated) localStorage.setItem('app1_custom_providers', JSON.stringify(customArr));
             customArr.forEach((p: ProviderConfig) => {
-                AI_PROVIDERS[p.id] = p;
+                if (!getProviderEndpointError(p)) AI_PROVIDERS[p.id] = p;
             });
-        }
-        const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-        if (envKey && envKey.trim() !== '') {
-            const currentKeysStr = localStorage.getItem('app1_gemini_api_keys');
-            let currentKeys = currentKeysStr ? JSON.parse(currentKeysStr) : [];
-            if (!currentKeys.includes(envKey)) {
-                currentKeys.unshift(envKey);
-                localStorage.setItem('app1_gemini_api_keys', JSON.stringify(currentKeys));
-            }
         }
     } catch (e) {}
 };
@@ -78,8 +108,16 @@ loadAIProviders();
 // SCENE/PROMPT_CONCURRENCY: số call chạy song song (gói paid). BATCH_SIZE/PROMPT_BATCH_SIZE
 // càng lớn → càng ÍT round-trip (mỗi call gói nhiều cảnh hơn, vẫn dưới trần 8192 token out).
 // Lưới an toàn (scrub tên/film/banned) vẫn chạy theo TỪNG cảnh nên không bị ảnh hưởng.
-const CONFIG = { SCENE_CONCURRENCY: 5, PROMPT_CONCURRENCY: 8, MAX_RETRIES: 3, BATCH_SIZE: 15 };
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const CONFIG = { SCENE_CONCURRENCY: 3, PROMPT_CONCURRENCY: 4, BATCH_SIZE: 15 };
+const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
+const DEFAULT_WORKFLOW_TIMEOUT_MS = {
+  context: 180_000,
+  analyze: 300_000,
+  repair: 300_000,
+  prompt: 600_000,
+  style: 180_000,
+};
 
 // 👉 Veo hiểu các từ "phim nhựa" (film grain, shot on 35mm film, archival film...) theo
 // nghĩa ĐEN → vẽ luôn viền phim, lỗ răng cưa, số khung hình, xước đen lên video (lỗi thật
@@ -145,20 +183,37 @@ const getColorDescription = (style: ColorStyle): string => {
   }
 };
 
-const createConcurrencyLimiter = (defaultMax: number) => {
-  let running = 0;
-  const queue: (() => void)[] = [];
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    const apiTier = localStorage.getItem('app1_api_tier') || 'paid';
-    const maxConcurrent = apiTier === 'free' ? 1 : defaultMax;
-    while (running >= maxConcurrent) await new Promise<void>(resolve => queue.push(resolve));
-    running++;
-    try { return await fn(); } finally { running--; if (queue.length > 0) queue.shift()!(); }
-  };
+type AILane = 'scene' | 'prompt';
+const AI_LIMITERS = {
+  scene: {
+    free: new AbortableFIFOLimiter(1),
+    paid: new AbortableFIFOLimiter(CONFIG.SCENE_CONCURRENCY),
+  },
+  prompt: {
+    free: new AbortableFIFOLimiter(1),
+    paid: new AbortableFIFOLimiter(CONFIG.PROMPT_CONCURRENCY),
+  },
 };
 
-const limitSceneConcurrency = createConcurrencyLimiter(CONFIG.SCENE_CONCURRENCY);
-const limitPromptConcurrency = createConcurrencyLimiter(CONFIG.PROMPT_CONCURRENCY);
+const getAILimiter = (lane: AILane, tier: 'free' | 'paid') => AI_LIMITERS[lane][tier];
+
+const normalizeOperationOptions = (
+  options: AIOperationOptions | undefined,
+  workflowTimeoutMs: number,
+): AIOperationOptions => ({
+  ...options,
+  providerId: options?.providerId || localStorage.getItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0] || 'gemini'),
+  apiTier: options?.apiTier || (localStorage.getItem('app1_api_tier') === 'paid' ? 'paid' : 'free'),
+  deadlineAt: options?.deadlineAt ?? deadlineAfter(workflowTimeoutMs),
+  attemptTimeoutMs: options?.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS,
+  maxAttempts: Math.min(2, Math.max(1, options?.maxAttempts ?? 2)),
+});
+
+const withAuxiliaryPolicy = (options: AIOperationOptions): AIOperationOptions => ({
+  ...options,
+  attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? 30_000, 30_000),
+  maxAttempts: 1,
+});
 
 // 👉 Trích khối JSON cân bằng (mảng/object) đầu tiên trong chuỗi, tôn trọng
 // chuỗi con và ký tự escape. Trả về phần còn lại nếu chưa đóng ngoặc (để bước
@@ -207,73 +262,18 @@ const sanitizeJSONString = (rawStr: string): string => {
   }
 };
 
-const FIREBASE_DB_URL = "https://planning-with-ai-367b2-default-rtdb.asia-southeast1.firebasedatabase.app/veo3_stats.json"; 
 export const updateUsageStats = (updates: { input?: number; output?: number; cached?: number; calls?: number; scripts?: number; prompts?: number }) => {
   const record = { timestamp: Date.now(), input: updates.input || 0, output: updates.output || 0, cached: updates.cached || 0, calls: updates.calls || 0, scripts: updates.scripts || 0, prompts: updates.prompts || 0 };
   try {
     let historyStr = localStorage.getItem('veo3_usage_history');
     let history: any[] = historyStr ? JSON.parse(historyStr) : [];
     history.push(record);
-    if (history.length > 5000) history = history.slice(history.length - 5000);
+    if (history.length > 1000) history = history.slice(history.length - 1000);
     localStorage.setItem('veo3_usage_history', JSON.stringify(history));
   } catch (e) {}
-  if (FIREBASE_DB_URL && FIREBASE_DB_URL.startsWith("http")) fetch(FIREBASE_DB_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record) }).catch(e => {});
 };
 
 const keyIndexes: Record<string, number> = {};
-
-// Đua promise với đồng hồ timeout — hết giờ ném AbortError để vòng retry xử lý.
-// (SDK Gemini không có timeout; request treo sẽ kẹt cả kịch bản nếu không có lớp này.)
-const raceWithTimeout = async <T>(p: Promise<T>, ms: number): Promise<T> => {
-  let t: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      p,
-      new Promise<never>((_, reject) => { t = setTimeout(() => { const e: any = new Error('timeout'); e.name = 'AbortError'; reject(e); }, ms); })
-    ]);
-  } finally { clearTimeout(t); }
-};
-
-const callGeminiSafe = async <T>(contents: any, systemInstruction: string | undefined, schema: any, model: string, temperature = 0.5, limiter = limitSceneConcurrency, forcedProviderId: string): Promise<T> => {
-  const providerConfig = AI_PROVIDERS[forcedProviderId];
-  const executeCall = async () => {
-    const keys = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
-    if (!keys || keys.length === 0) throw new Error(`[LỖI CẤU HÌNH] BẠN CHƯA CÓ API KEY CHO MODEL: ${providerConfig.name.toUpperCase()}`);
-    if (keyIndexes[providerConfig.id] === undefined) keyIndexes[providerConfig.id] = 0;
-    if (keyIndexes[providerConfig.id] >= keys.length) keyIndexes[providerConfig.id] = 0;
-    const ai = new GoogleGenAI({ apiKey: keys[keyIndexes[providerConfig.id]] });
-    const configData: any = { 
-      responseMimeType: "application/json", maxOutputTokens: 8192, temperature, responseSchema: schema,
-      safetySettings: [{ category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" }, { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }]
-    };
-    if (systemInstruction) configData.systemInstruction = systemInstruction;
-    const response = await raceWithTimeout(ai.models.generateContent({ model, contents, config: configData }), 120000);
-    if (response.usageMetadata) updateUsageStats({ input: response.usageMetadata.promptTokenCount, cached: response.usageMetadata.cachedContentTokenCount, output: response.usageMetadata.candidatesTokenCount, calls: 1 });
-    return JSON.parse(sanitizeJSONString(response.text || "[]")) as T;
-  };
-  let initialKeysLen = Math.max(1, JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]').length);
-  // (Sửa hiệu năng) CHẶN TRẦN retry: trước đây = keys×3 (nhiều key → vòng retry phình bệnh
-  // lý, cộng dồn delay tới nhiều phút). Nay tối đa 8, vẫn đủ xoay hết vòng key.
-  let maxRetries = Math.min(Math.max(CONFIG.MAX_RETRIES, initialKeysLen + 2), 8);
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try { return await limiter(executeCall); }
-    catch(error: any) {
-      if (error?.name === 'AbortError') {
-         if (attempt < maxRetries) { await delay(500 + Math.random() * 700); continue; }
-         throw new Error(`API ${providerConfig.name} phản hồi quá lâu (timeout 120s) — server đang quá tải, hãy thử lại.`);
-      }
-      const status = error?.status || error?.code;
-      if (status === 429) {
-         const currentKeys = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
-         if (currentKeys.length > 1) { keyIndexes[providerConfig.id] = (keyIndexes[providerConfig.id] + 1) % currentKeys.length; await delay(600 + Math.random() * 500); continue; }
-         else { if (attempt >= maxRetries) throw new Error(`LỖI 429: Key ${providerConfig.name} cạn Hạn ngạch.`); await delay(Math.min(2000 * Math.pow(2, attempt - 1), 15000) + Math.random() * 500); continue; }
-      }
-      if ((status === 503 || status === 500) && attempt < maxRetries) { await delay(2000 + Math.random() * 1000); continue; }
-      throw error;
-    }
-  }
-  throw new Error(`Lỗi mạng không xác định API Key ${providerConfig.name}.`);
-};
 
 // 👉 Lấy nội dung text từ body của endpoint kiểu OpenAI — CHỊU ĐƯỢC CẢ 2 KIỂU:
 //   (1) JSON thường:   { "choices":[{ "message":{ "content":"..." } }] }
@@ -312,158 +312,211 @@ export const extractOpenAIContent = (raw: string): string => {
   return raw;
 };
 
-const callOpenAISafe = async <T>(contents: any, systemInstruction: string | undefined, providerId: string, schema: any, temperature = 0.5, limiter = limitSceneConcurrency): Promise<T> => {
-  const providerConfig = AI_PROVIDERS[providerId];
-  if (!providerConfig) throw new Error(`[LỖI CẤU HÌNH] Không tìm thấy Model ID '${providerId}' trong hệ thống! Vui lòng chọn lại AI.`);
-
-  const executeCall = async () => {
-    const keys = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
-    if (!keys || keys.length === 0) throw new Error(`[LỖI CẤU HÌNH] BẠN CHƯA CÓ API KEY CHO MODEL: ${providerConfig.name.toUpperCase()}`);
-    
-    if (keyIndexes[providerConfig.id] === undefined) keyIndexes[providerConfig.id] = 0;
-    if (keyIndexes[providerConfig.id] >= keys.length) keyIndexes[providerConfig.id] = 0;
-    const currentApiKey = keys[keyIndexes[providerConfig.id]];
-    
-    let finalSystemInstruction = systemInstruction || "You are a helpful assistant.";
-    finalSystemInstruction += `\n\nCRITICAL DIRECTIVE: You MUST output STRICTLY valid JSON matching the exact requested structure. Do not include markdown formatting like \`\`\`json. Do NOT add any preamble, greeting, explanation, or commentary (e.g. "I appreciate", "Sure", "Here is..."). Your entire response MUST start with '[' or '{' and end with ']' or '}'. Return only the raw JSON data.`;
-    if (schema) finalSystemInstruction += `\nEXPECTED JSON SCHEMA FORMAT:\n${JSON.stringify(schema)}`;
-    
-    let messages: any[] = [{ role: "system", content: finalSystemInstruction }];
-    
-    if (typeof contents === 'string') {
-        messages.push({ role: "user", content: contents });
-    } else if (Array.isArray(contents) && contents[0]?.parts) {
-        const parts = contents[0].parts;
-        const textPart = parts.find((p: any) => p.text)?.text || "";
-        const imagePart = parts.find((p: any) => p.inlineData);
-
-        if (imagePart) {
-            messages.push({
-                role: "user",
-                content: [
-                    { type: "text", text: textPart },
-                    { type: "image_url", image_url: { url: `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}` } }
-                ]
-            });
-        } else {
-             messages.push({ role: "user", content: textPart });
-        }
-    } else if (contents.parts) {
-        const textPart = contents.parts.find((p: any) => p.text)?.text || "";
-        const imagePart = contents.parts.find((p: any) => p.inlineData);
-        if (imagePart) {
-            messages.push({
-                role: "user",
-                content: [
-                    { type: "text", text: textPart },
-                    { type: "image_url", image_url: { url: `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}` } }
-                ]
-            });
-        } else {
-             messages.push({ role: "user", content: textPart });
-        }
-    } else {
-        throw new Error("UNSUPPORTED_VISION");
-    }
-    
-    const cleanBaseUrl = (providerConfig.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
-    const targetUrl = `${cleanBaseUrl}/chat/completions`;
-    
-    // (Sửa hiệu năng) TIMEOUT 120s cho TOÀN BỘ request — kể cả lúc ĐỌC BODY. Trước đây
-    // clearTimeout chạy ngay khi fetch nhận headers, còn response.json() (đọc body) KHÔNG
-    // có timeout: DeepSeek/API quá tải giữ kết nối và nhỏ giọt body → treo vô hạn, phân
-    // đoạn sau đứng im. Giờ đồng hồ chỉ tắt sau khi parse xong; abort giữa chừng → retry.
-    // 👉 DEEPSEEK V4: model deepseek-v4-flash MẶC ĐỊNH BẬT thinking mode (deepseek-chat cũ
-    // là chế độ non-thinking). Thinking ngốn token suy nghĩ trước khi ra JSON → output lớn
-    // (Bước 2/3) bị cụt/rỗng ("mạng hụt") và cực chậm. Tắt bằng thinking:{type:"disabled"}
-    // (KHÔNG dùng reasoning_effort:"none" — DeepSeek trả 400). Chỉ gửi cho host DeepSeek.
-    const isDeepSeekHost = /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120000);
-    try {
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${currentApiKey}`
-        },
-        body: JSON.stringify({
-          model: providerConfig.model,
-          messages: messages,
-          temperature: temperature,
-          max_tokens: 8192,
-          stream: false, // xin phản hồi JSON gọn (một số proxy vẫn trả SSE → parser dưới lo tiếp)
-          ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {})
-        }),
-        signal: controller.signal
-      });
-
-      if (!response.ok) {
-          const textBody = await response.text();
-          let errStr = textBody;
-          try {
-              const errObj = JSON.parse(textBody);
-              errStr = errObj.error?.message || JSON.stringify(errObj);
-          } catch(e) {}
-          throw { status: response.status, details: errStr };
-      }
-
-      // Đọc body dạng TEXT rồi tự tách nội dung — chịu được cả JSON thường lẫn streaming SSE.
-      const rawBody = await response.text();
-      const text = extractOpenAIContent(rawBody) || "[]";
-      let parsed = JSON.parse(sanitizeJSONString(text));
-
-      if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
-          const arrayValues = Object.values(parsed).find(v => Array.isArray(v));
-          parsed = arrayValues ? arrayValues : [];
-      }
-
-      return parsed as T;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-  
-  const initialKeysLen = Math.max(1, JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]').length);
-  // (Sửa hiệu năng) Chặn trần retry (không phình theo số key) — xem chú thích ở callGeminiSafe.
-  const maxRetries = Math.min(Math.max(CONFIG.MAX_RETRIES, initialKeysLen + 2), 8);
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try { return await limiter(executeCall); }
-    catch(error: any) {
-      // Request bị cắt do timeout 90s → thử lại (nếu còn lượt) thay vì kẹt.
-      if (error?.name === 'AbortError') {
-          if (attempt < maxRetries) { await delay(500 + Math.random() * 700); continue; }
-          throw new Error(`API ${providerConfig.name} phản hồi quá lâu (timeout 120s) — server đang quá tải, hãy thử lại.`);
-      }
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-          throw new Error(`Bị TRÌNH DUYỆT chặn kết nối (Lỗi CORS). Hãy kiểm tra lại link API hoặc bật tiện ích Allow CORS trên trình duyệt.`);
-      }
-
-      const status = error?.status || error?.response?.status;
-      if (status === 429 || status === 402) {
-         const currentKeys = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
-         if (currentKeys.length > 1) { keyIndexes[providerConfig.id] = (keyIndexes[providerConfig.id] + 1) % currentKeys.length; await delay(600 + Math.random() * 500); continue; }
-         else { if (attempt >= maxRetries) throw new Error(`LỖI 429/402: Key ${providerConfig.name} cạn Hạn ngạch.`); await delay(Math.min(2000 * Math.pow(2, attempt - 1), 15000) + Math.random() * 500); continue; }
-      }
-      if ((status === 503 || status === 500 || status === 502) && attempt < maxRetries) { await delay(2000 + Math.random() * 1000); continue; }
-      
-      if (error?.details) {
-          throw new Error(`Server từ chối (HTTP ${status}): ${error.details}`);
-      }
-      
-      if (error.message) throw error; 
-      throw new Error(`Lỗi kết nối API ${providerConfig.name}: HTTP ${status || 'Unknown'}`);
-    }
-  }
-  throw new Error(`Lỗi mạng không xác định API ${providerConfig.name}`);
+const validateProviderEndpoint = (providerConfig: ProviderConfig): void => {
+  const endpointError = getProviderEndpointError(providerConfig);
+  if (endpointError) throw new Error(`[LỖI CẤU HÌNH] ${providerConfig.name}: ${endpointError}`);
 };
 
-const callAISafe = async <T>(contents: any, systemInstruction: string | undefined, schema: any, temperature = 0.5, limiter = limitSceneConcurrency, forcedProviderId?: string): Promise<T> => {
-  const providerId = forcedProviderId || localStorage.getItem('app1_ai_provider') || Object.keys(AI_PROVIDERS)[0] || 'gemini';
-  const providerConfig = AI_PROVIDERS[providerId] || AI_PROVIDERS[Object.keys(AI_PROVIDERS)[0]];
-  if (providerConfig.type === 'openai-compatible') return await callOpenAISafe<T>(contents, systemInstruction, providerId, schema, temperature, limiter);
-  return await callGeminiSafe<T>(contents, systemInstruction, schema, providerConfig.model, temperature, limiter, providerId);
+const readProviderKeys = (providerConfig: ProviderConfig): string[] => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
+    return Array.isArray(parsed) ? normalizeApiKeys(parsed.filter((key): key is string => typeof key === 'string')) : [];
+  } catch {
+    return [];
+  }
+};
+
+const executeGeminiAttempt = async <T>(
+  contents: any,
+  systemInstruction: string | undefined,
+  schema: any,
+  providerConfig: ProviderConfig,
+  apiKey: string,
+  temperature: number,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<T> => {
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: { retryOptions: { attempts: 1 } },
+  });
+  const configData: any = {
+    responseMimeType: 'application/json',
+    maxOutputTokens: 8192,
+    temperature,
+    responseSchema: schema,
+    abortSignal: signal,
+    httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
+    safetySettings: [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    ],
+  };
+  if (systemInstruction) configData.systemInstruction = systemInstruction;
+  const response = await ai.models.generateContent({ model: providerConfig.model, contents, config: configData });
+  if (response.usageMetadata) {
+    updateUsageStats({
+      input: response.usageMetadata.promptTokenCount,
+      cached: response.usageMetadata.cachedContentTokenCount,
+      output: response.usageMetadata.candidatesTokenCount,
+      calls: 1,
+    });
+  }
+  return JSON.parse(sanitizeJSONString(response.text || '[]')) as T;
+};
+
+const buildOpenAIMessages = (contents: any, systemInstruction: string | undefined, schema: any): any[] => {
+  let finalSystemInstruction = systemInstruction || 'You are a helpful assistant.';
+  finalSystemInstruction += `\n\nCRITICAL DIRECTIVE: You MUST output STRICTLY valid JSON matching the exact requested structure. Do not include markdown formatting. Do NOT add a preamble, greeting, explanation, or commentary. Return only raw JSON data.`;
+  if (schema) finalSystemInstruction += `\nEXPECTED JSON SCHEMA FORMAT:\n${JSON.stringify(schema)}`;
+  const messages: any[] = [{ role: 'system', content: finalSystemInstruction }];
+
+  const pushParts = (parts: any[]) => {
+    const textPart = parts.find((part: any) => part.text)?.text || '';
+    const imagePart = parts.find((part: any) => part.inlineData);
+    if (imagePart) {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: textPart },
+          { type: 'image_url', image_url: { url: `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}` } },
+        ],
+      });
+    } else {
+      messages.push({ role: 'user', content: textPart });
+    }
+  };
+
+  if (typeof contents === 'string') messages.push({ role: 'user', content: contents });
+  else if (Array.isArray(contents) && contents[0]?.parts) pushParts(contents[0].parts);
+  else if (contents?.parts) pushParts(contents.parts);
+  else throw new Error('UNSUPPORTED_VISION');
+  return messages;
+};
+
+const executeOpenAIAttempt = async <T>(
+  contents: any,
+  systemInstruction: string | undefined,
+  schema: any,
+  providerConfig: ProviderConfig,
+  apiKey: string,
+  temperature: number,
+  signal: AbortSignal,
+): Promise<T> => {
+  const cleanBaseUrl = (providerConfig.baseUrl || '').replace(/\/+$/, '');
+  const targetUrl = `${cleanBaseUrl}/chat/completions`;
+  const isDeepSeekHost = /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
+  const response = await fetch(targetUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: providerConfig.model,
+      messages: buildOpenAIMessages(contents, systemInstruction, schema),
+      temperature,
+      max_tokens: 8192,
+      stream: false,
+      ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {}),
+    }),
+    signal,
+  });
+
+  if (!response.ok) {
+    const textBody = await response.text();
+    let details = textBody.slice(0, 4000);
+    try {
+      const parsed = JSON.parse(textBody);
+      details = parsed?.error?.message || JSON.stringify(parsed).slice(0, 4000);
+    } catch { /* keep bounded plain-text body */ }
+    throw new AIHttpError(response.status, `Server từ chối (HTTP ${response.status}): ${details}`, {
+      details,
+      providerId: providerConfig.id,
+      retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+    });
+  }
+
+  const rawBody = await response.text();
+  const text = extractOpenAIContent(rawBody) || '[]';
+  let parsed = JSON.parse(sanitizeJSONString(text));
+  if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
+    const arrayValues = Object.values(parsed).find((value) => Array.isArray(value));
+    parsed = arrayValues || [];
+  }
+  return parsed as T;
+};
+
+const callAISafe = async <T>(
+  contents: any,
+  systemInstruction: string | undefined,
+  schema: any,
+  temperature = 0.5,
+  lane: AILane = 'scene',
+  forcedProviderId?: string,
+  operationOptions?: AIOperationOptions,
+): Promise<T> => {
+  const options = normalizeOperationOptions(operationOptions, DEFAULT_CALL_TIMEOUT_MS);
+  const providerId = forcedProviderId || options.providerId!;
+  const sourceProvider = AI_PROVIDERS[providerId];
+  if (!sourceProvider) throw new Error(`[LỖI CẤU HÌNH] Không tìm thấy Model ID '${providerId}'. Vui lòng chọn lại AI.`);
+  const providerConfig: ProviderConfig = { ...sourceProvider };
+  validateProviderEndpoint(providerConfig);
+
+  const keys = readProviderKeys(providerConfig);
+  if (keys.length === 0) {
+    throw new Error(`[LỖI CẤU HÌNH] BẠN CHƯA CÓ API KEY CHO MODEL: ${providerConfig.name.toUpperCase()}`);
+  }
+  const startIndex = Math.min(keyIndexes[providerConfig.id] || 0, keys.length - 1);
+  // Reserve a key synchronously before the first await. Concurrent paid-tier
+  // calls therefore start on different keys instead of all reading index 0.
+  keyIndexes[providerConfig.id] = (startIndex + 1) % keys.length;
+  let keyPool = createKeyPoolState(keys, startIndex);
+  const workflowDeadline = options.deadlineAt ?? deadlineAfter(DEFAULT_CALL_TIMEOUT_MS);
+  const attemptTimeoutMs = Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
+  const limiter = getAILimiter(lane, options.apiTier || 'free');
+
+  // Queue time is governed by the workflow deadline, not the per-attempt clock.
+  // Starting retry timers only after FIFO admission prevents queued free-tier
+  // batches from expiring before they ever reach the provider.
+  return limiter.run(async () => {
+    const callDeadline = Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
+    const result = await runWithRetry<T>(async ({ attempt, signal, maxAttempts }) => {
+      const selected = selectNextKey(keyPool);
+      keyPool = selected.state;
+      if (!selected.selection) throw new Error(`[LỖI CẤU HÌNH] Không còn API key khả dụng cho ${providerConfig.name}.`);
+      const selection = selected.selection;
+      options.onProgress?.(`Đang gọi ${providerConfig.name} (lượt ${attempt}/${maxAttempts})...`);
+
+      try {
+        const transportTimeout = Math.max(1, Math.min(attemptTimeoutMs, remainingDeadlineMs(callDeadline)));
+        return providerConfig.type === 'gemini'
+          ? executeGeminiAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, transportTimeout)
+          : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal);
+      } catch (error) {
+        const classification = classifyAIError(error);
+        keyPool = updateKeyState(keyPool, selection.index, classification.keyAction, {
+          cooldownMs: classification.retryAfterMs || 0,
+        });
+        if (classification.keyAction === 'keep') keyPool = { ...keyPool, cursor: selection.index };
+        throw error;
+      }
+    }, {
+      signal: options.signal,
+      deadlineAt: callDeadline,
+      attemptTimeoutMs,
+      maxAttempts: options.maxAttempts,
+      shouldRetry: (classification) => {
+        if (classification.retryable) return true;
+        if (classification.keyAction !== 'disable' && classification.keyAction !== 'cooldown') return false;
+        return keyPool.entries.some((entry) => entry.state === 'ready');
+      },
+      onRetry: (classification, _error, context) => {
+        options.onProgress?.(`${providerConfig.name} lỗi ${classification.kind}; thử lại lần ${context.attempt + 1}/${context.maxAttempts}...`);
+      },
+    });
+
+    return result;
+  }, { signal: options.signal, deadlineAt: workflowDeadline });
 };
 
 // ============================================================================
@@ -1211,7 +1264,7 @@ const scrubRealNames = (text: string, characters: CharacterIdentity[]): string =
 // 👉 BƯỚC 2.5 — VISUAL PLANNER (chống lặp bố cục XUYÊN mẻ và XUYÊN phân đoạn).
 // Bệnh đã gặp thật: 5 cảnh liên tiếp đều "chuối trên bàn bếp" vì mỗi mẻ Bước 3
 // (5 cảnh) không nhìn thấy mẻ khác. Planner nhìn 40 cảnh/lần + SỔ ĐA DẠNG dùng
-// chung toàn app (các phân đoạn chạy song song vẫn nối tiếp qua plannerChain),
+// chung toàn app (các phân đoạn chạy song song dùng sổ này theo best-effort),
 // giao cho mỗi cảnh một "phương án bố cục" (form/place/era/shot/person) mang tính
 // RÀNG BUỘC với Bước 3. Planner hỏng → Bước 3 chạy như cũ, không thêm điểm chết.
 // ============================================================================
@@ -1285,8 +1338,11 @@ const planVisualsForScenes = async (
   scenes: Scene[],
   globalContext: string,
   requiredCharsByScene: Map<number, string[]>,
-  onStatusUpdate?: (msg: string) => void
+  onStatusUpdate?: (msg: string) => void,
+  aiOptions?: AIOperationOptions,
 ): Promise<Map<number, VisualPlan>> => {
+  const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.prompt);
+  const plannerOperation = withAuxiliaryPolicy(operation);
   const plans = new Map<number, VisualPlan>();
   for (let i = 0; i < scenes.length; i += PLANNER_BATCH) {
     const chunk = scenes.slice(i, i + PLANNER_BATCH);
@@ -1301,7 +1357,7 @@ const planVisualsForScenes = async (
       planned = await callAISafe<any[]>(
         `Plan compositions for these scenes:\n${JSON.stringify(payload)}`,
         buildPlannerInstruction(globalContext, ledgerLabels.slice(-25)),
-        PLAN_SCHEMA, 0.6, limitPromptConcurrency
+        PLAN_SCHEMA, 0.6, 'prompt', undefined, plannerOperation
       );
     } catch { continue; }                                  // planner là tầng phụ trợ — lỗi thì bỏ qua mẻ này
     if (!Array.isArray(planned)) continue;
@@ -1325,7 +1381,7 @@ const planVisualsForScenes = async (
         });
         const retried = await callAISafe<any[]>(
           `These scenes were assigned compositions that are ALREADY USED elsewhere in the video. Assign each a DIFFERENT form+place (rotate to another form of the subject or another location):\n${JSON.stringify(retryPayload)}`,
-          buildPlannerInstruction(globalContext, usedNow), PLAN_SCHEMA, 0.75, limitPromptConcurrency
+          buildPlannerInstruction(globalContext, usedNow), PLAN_SCHEMA, 0.75, 'prompt', undefined, plannerOperation
         );
         if (Array.isArray(retried)) {
           const fixedIds = new Set<number>();
@@ -1359,8 +1415,12 @@ const planToDirective = (p: VisualPlan | undefined, hasRequiredChars: boolean): 
   return parts.join(' | ');
 };
 
-export const extractContextAndCharacters = async (rawScript: string): Promise<{ context: string; characters: CharacterIdentity[] }> => {
+export const extractContextAndCharacters = async (
+  rawScript: string,
+  aiOptions?: AIOperationOptions,
+): Promise<{ context: string; characters: CharacterIdentity[] }> => {
   if (!rawScript || rawScript.trim().length === 0) return { context: "", characters: [] };
+  const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.context);
   try {
     const result = await callAISafe<any>(
       `SCRIPT:\n"${rawScript}"`, 
@@ -1385,7 +1445,7 @@ CRITICAL RULES:
 5. For "ethnicity": extract from the script if stated; else INFER from the character's story context (nationality/location/era — e.g. a Guatemalan president → "Guatemalan"); if the story gives NO such context at all, default to "white American" (the videos target American viewers). For "clothing": extract strictly from the script; if not mentioned, leave EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
       { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING, description: "Physical appearance ONLY, comma-separated, ALWAYS FILLED for EVERY character incl. a narrator/host (invent ordinary era/ethnicity-appropriate details when the script is silent — needed for cross-scene consistency): FACE (age, gender, facial features, hair, skin), then BUILD (height/build), then CLOTHING (type + color). NEVER a name, title, office, rank, occupation, country-as-title, or achievement (no 'president', 'general', 'president of Guatemala', 'democratically elected'), and never a real figure's signature features. Never empty." } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
-      0.4, limitSceneConcurrency);
+      0.4, 'scene', undefined, operation);
     updateUsageStats({ scripts: 1 });
 
     const rawChars: CharacterIdentity[] = (result.characters || [])
@@ -1456,7 +1516,14 @@ Output strictly valid JSON.`,
   }
 };
 
-export const analyzeSingleSegmentToScenes = async (segment: { id: string; content: string }, globalContext: string = '', options?: PromptOptions, characters: CharacterIdentity[] = []): Promise<Scene[]> => {
+export const analyzeSingleSegmentToScenes = async (
+  segment: { id: string; content: string },
+  globalContext: string = '',
+  options?: PromptOptions,
+  characters: CharacterIdentity[] = [],
+  aiOptions?: AIOperationOptions,
+): Promise<Scene[]> => {
+  const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.analyze);
   const exactSourceTexts = splitScriptByCode(segment.content, options?.splitLogic);
   let allFinalScenes: Scene[] = [];
   let globalSceneId = 1;
@@ -1510,7 +1577,7 @@ CHARACTER MAPPING — MANDATORY:
 CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The 'id' in your JSON must exactly match the [ID: X] provided. DO NOT CHANGE THE TEXT.`;
 
       try { 
-        const aiResults = await callAISafe<any[]>(`CONTEXT: ${globalContext}\n\nTEXT CHUNKS:\n${promptTexts}`, systemInstruction, SCENE_SCHEMA, 0.4, limitSceneConcurrency); 
+        const aiResults = await callAISafe<any[]>(`CONTEXT: ${globalContext}\n\nTEXT CHUNKS:\n${promptTexts}`, systemInstruction, SCENE_SCHEMA, 0.4, 'scene', undefined, operation);
         const successfulIds: number[] = [];
         
         for (const res of aiResults) {
@@ -1530,10 +1597,7 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
         }
         pendingIndices = pendingIndices.filter(i => !successfulIds.includes(i));
       } 
-      catch (e: any) { 
-        if (e.message.includes("[LỖI CẤU HÌNH]") || e.message.includes("CORS")) throw e; 
-        if (loopCount >= 2 && pendingIndices.length === batchTexts.length) throw e;
-      }
+      catch (e: any) { throw e; }
     }
     
     return { index, chunkScenes: validScenes };
@@ -1562,8 +1626,15 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
   return allFinalScenes;
 };
 
-export const repairFailedScenes = async (failedScenes: Scene[], globalContext: string = '', options?: PromptOptions, characters: CharacterIdentity[] = []): Promise<Scene[]> => {
+export const repairFailedScenes = async (
+  failedScenes: Scene[],
+  globalContext: string = '',
+  options?: PromptOptions,
+  characters: CharacterIdentity[] = [],
+  aiOptions?: AIOperationOptions,
+): Promise<Scene[]> => {
   if (failedScenes.length === 0) return [];
+  const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.repair);
   
   const charProfiles = buildCharacterProfiles(characters);
   let loopCount = 0;
@@ -1602,7 +1673,7 @@ CHARACTER MAPPING — MANDATORY:
 CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' must exactly match the [ID: X] provided. DO NOT CHANGE THE TEXT.`;
 
       try {
-          const aiResults = await callAISafe<any[]>(`CONTEXT: ${globalContext}\n\nTEXT CHUNKS:\n${currentPrompt}`, systemInstruction, SCENE_SCHEMA, 0.4, limitSceneConcurrency);
+          const aiResults = await callAISafe<any[]>(`CONTEXT: ${globalContext}\n\nTEXT CHUNKS:\n${currentPrompt}`, systemInstruction, SCENE_SCHEMA, 0.4, 'scene', undefined, operation);
           const successIds: number[] = [];
           
           for (const res of aiResults) {
@@ -1621,9 +1692,7 @@ CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' mus
               }
           }
           pending = pending.filter(s => !successIds.includes(s.id));
-      } catch (e: any) {
-          if (loopCount >= 2) throw e;
-      }
+      } catch (e: any) { throw e; }
   }
 
   return [...results, ...pending];
@@ -1638,9 +1707,12 @@ export const generatePromptsForSingleSegment = async (
   characters: CharacterIdentity[] = [], 
   onStatusUpdate?: (msg: string) => void,
   customPromptSuffix: string = '',
-  options?: PromptOptions
+  options?: PromptOptions,
+  aiOptions?: AIOperationOptions,
 ): Promise<{ items: PromptItem[], rescueProvider?: string }> => {
   if (segment.scenes.length === 0) return { items: [] };
+  const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.prompt);
+  const rescueOperation = withAuxiliaryPolicy(operation);
   const colorMoodDesc = getColorDescription(colorStyle);
 
   // 👉 Mặc định "trông như quay thật" — KHÔNG dùng từ phim nhựa (film/grain) để Veo
@@ -1662,8 +1734,8 @@ export const generatePromptsForSingleSegment = async (
 
   // 👉 B2.5 — VISUAL PLANNER: quy hoạch bố cục TOÀN phân đoạn trước khi viết prompt.
   // Nhân vật bắt buộc của từng cảnh tính trước để planner không ép "không người"
-  // vào cảnh có nhân vật. Chạy nối tiếp qua plannerChain để sổ đa dạng nhất quán
-  // khi nhiều phân đoạn chạy song song. Planner hỏng → bỏ qua, Bước 3 chạy như cũ.
+  // vào cảnh có nhân vật. Planner chạy độc lập theo từng phân đoạn để không chặn
+  // mẻ khác; sổ đa dạng vẫn được dùng theo best-effort. Planner hỏng → Bước 3 chạy như cũ.
   const segCharIndex = buildCharacterIndex(characters);
   const requiredCharsByScene = new Map<number, string[]>();
   for (const s of segment.scenes) {
@@ -1675,14 +1747,18 @@ export const generatePromptsForSingleSegment = async (
     requiredCharsByScene.set(s.id, req);
   }
   let visualPlans = new Map<number, VisualPlan>();
-  if (options?.visualPlanner !== false) {
+  // Planner improves diversity but costs an extra model call. Enable it by
+  // default for paid capacity; free-tier users get the faster path unless they
+  // explicitly opt in through persisted options.
+  const useVisualPlanner = options?.visualPlanner ?? (operation.apiTier === 'paid');
+  if (useVisualPlanner) {
     onStatusUpdate?.('Đang quy hoạch bố cục cảnh (chống lặp)...');
     // 👉 (Sửa hiệu năng) KHÔNG nối tiếp toàn cục qua plannerChain nữa: trước đây mọi phân
     // đoạn xâu chuỗi planner tuần tự và CHẶN Bước 3 → phân đoạn sau chờ planner mọi phân
     // đoạn trước, làm chậm cả kịch bản. Giờ mỗi phân đoạn chạy planner ĐỘC LẬP (đồng thời,
     // đã bị giới hạn bởi limiter). Sổ đa dạng vẫn dùng chung nên dedup vẫn hoạt động (best-
     // effort). Planner chỉ là tầng phụ trợ — hỏng thì Bước 3 vẫn chạy bình thường.
-    try { visualPlans = await planVisualsForScenes(segment.scenes, globalContext, requiredCharsByScene, onStatusUpdate); } catch { /* bỏ qua */ }
+    try { visualPlans = await planVisualsForScenes(segment.scenes, globalContext, requiredCharsByScene, onStatusUpdate, operation); } catch { /* bỏ qua */ }
   }
 
   const systemInstruction = `You are a video-prompt engineer for Veo 3 (8-second historical B-roll for American viewers).
@@ -1877,7 +1953,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           const payload = pendingBatch.map(makePayload);
           const generated = await callAISafe<any[]>(
             `Generate structured prompts for:\n${JSON.stringify(payload)}\n`,
-            systemInstruction, dynamicPromptSchema, 0.35, limitPromptConcurrency, providerId
+            systemInstruction, dynamicPromptSchema, 0.35, 'prompt', providerId, operation
           );
 
           const acceptedIds: number[] = [];
@@ -1899,7 +1975,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
 
           pendingBatch = pendingBatch.filter(s => !acceptedIds.includes(s.id));
         } catch (e: any) {
-          if (batchLoop >= 2) throw new Error(`Mẻ ${index + 1} quá tải: ${e.message}`);
+          throw new Error(`Mẻ ${index + 1} thất bại: ${e.message || e}`);
         }
       }
 
@@ -1915,7 +1991,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
             try {
               const generated = await callAISafe<any[]>(
                 `Generate structured prompts for:\n${JSON.stringify([makePayload(scene)])}\n`,
-                systemInstruction, dynamicPromptSchema, 0.4, limitPromptConcurrency, providerId
+                systemInstruction, dynamicPromptSchema, 0.4, 'prompt', providerId, rescueOperation
               );
               const list = Array.isArray(generated) ? generated : [];
               const pi = list.find(g => g?.sceneId === scene.id) || list[0];
@@ -1965,43 +2041,21 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
     return allResults.sort((a, b) => a.sceneId - b.sceneId);
   };
 
-  const defaultProviderId = localStorage.getItem('app1_ai_provider') || Object.keys(AI_PROVIDERS)[0] || 'gemini';
-  const apiTier = localStorage.getItem('app1_api_tier') || 'paid';
-  
-  try {
-    if (onStatusUpdate) onStatusUpdate(`Đang phân bổ vào ${AI_PROVIDERS[defaultProviderId]?.name || 'AI'}...`);
-    const items = await executeWithProvider(defaultProviderId);
-    updateUsageStats({ prompts: items.length });
-    return { items };
-  } catch (error: any) {
-    if (apiTier === 'paid' || error.message.includes("[LỖI CẤU HÌNH]")) throw error;
-
-    const availableProviders = Object.values(AI_PROVIDERS).filter(p => {
-       if (p.id === defaultProviderId) return false;
-       const keys = JSON.parse(localStorage.getItem(`app1_${p.keyPrefix}_api_keys`) || '[]');
-       return keys.length > 0;
-    });
-
-    const shuffled = availableProviders.sort(() => 0.5 - Math.random());
-    let lastError = error;
-    let currentFailedProvider = AI_PROVIDERS[defaultProviderId]?.name;
-
-    for (const fallbackProv of shuffled) {
-       try {
-         if (onStatusUpdate) onStatusUpdate(`⚠️ ${currentFailedProvider} lỗi. Đang mượn ${fallbackProv.name} cứu hộ...`);
-         const items = await executeWithProvider(fallbackProv.id);
-         updateUsageStats({ prompts: items.length });
-         return { items, rescueProvider: fallbackProv.name };
-       } catch (fallbackError: any) {
-         lastError = fallbackError;
-         currentFailedProvider = fallbackProv.name; 
-       }
-    }
-    throw new Error(`Mọi AI dự phòng đều đã sập. Cứu hộ thất bại! Chi tiết cuối: ${lastError.message}`);
-  }
+  const defaultProviderId = operation.providerId!;
+  const allocationMessage = `Đang phân bổ vào ${AI_PROVIDERS[defaultProviderId]?.name || 'AI'}...`;
+  onStatusUpdate?.(allocationMessage);
+  operation.onProgress?.(allocationMessage);
+  const items = await executeWithProvider(defaultProviderId);
+  updateUsageStats({ prompts: items.length });
+  return { items };
 };
 
-export const analyzeImageStyle = async (base64Image: string, mimeType: string) => {
+export const analyzeImageStyle = async (
+  base64Image: string,
+  mimeType: string,
+  aiOptions?: AIOperationOptions,
+) => {
+  const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.style);
   const promptText = `You are an elite Art Director and Cinematographer. 
 Analyze the uploaded image and extract ONLY its visual aesthetic.
 CRITICAL RULES: 
@@ -2031,33 +2085,12 @@ CRITICAL RULES:
     }
   ];
 
-  try {
-    const result = await callAISafe<any>(payload, undefined, STYLE_SCHEMA, 0.2, limitSceneConcurrency);
-    
-    return { 
-        analysis: result.analysis || "", 
-        summary: result.summary || "" 
-    };
-    
-  } catch (error: any) { 
-    const currentProviderId = localStorage.getItem('app1_ai_provider') || 'gemini';
-    
-    if (currentProviderId !== 'gemini') {
-        console.warn(`Model đang chọn từ chối phân tích ảnh. Kích hoạt cứu hộ nền bằng Gemini...`);
-        try {
-            const fallbackResult = await callAISafe<any>(payload, undefined, STYLE_SCHEMA, 0.2, limitSceneConcurrency, 'gemini');
-            return { 
-                analysis: fallbackResult.analysis || "", 
-                summary: fallbackResult.summary || "" 
-            };
-        } catch (fallbackError: any) {
-            throw new Error(`\n- AI đang chọn không hỗ trợ đọc ảnh.\n- Hệ thống cố cứu hộ bằng Gemini nhưng thất bại: ${fallbackError.message}`);
-        }
-    }
-    
-    throw error;
-  }
+  const result = await callAISafe<any>(payload, undefined, STYLE_SCHEMA, 0.2, 'scene', undefined, operation);
+  return {
+      analysis: result.analysis || "",
+      summary: result.summary || ""
+  };
 };
 
-export const extractContextFromScript = async (rawScript: string) => (await extractContextAndCharacters(rawScript)).context;
-export const extractCharactersFromScript = async (rawScript: string) => (await extractContextAndCharacters(rawScript)).characters;
+export const extractContextFromScript = async (rawScript: string, aiOptions?: AIOperationOptions) => (await extractContextAndCharacters(rawScript, aiOptions)).context;
+export const extractCharactersFromScript = async (rawScript: string, aiOptions?: AIOperationOptions) => (await extractContextAndCharacters(rawScript, aiOptions)).characters;
