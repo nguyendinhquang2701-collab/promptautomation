@@ -6,6 +6,7 @@ import Header from './components/Header';
 import { AppState, ScriptProject, ColorStyle, CharacterIdentity } from './types';
 import { analyzeSingleSegmentToScenes, generatePromptsForSingleSegment, extractContextAndCharacters, analyzeImageStyle, AI_PROVIDERS, repairFailedScenes, PromptOptions, AIOperationOptions } from './services/geminiService';
 import { createDefaultProject, hydrateProjectsWithReport, serializeProjects } from './state/projectPersistence';
+import { splitRawScriptIntoSegments } from './state/scriptSegmentation';
 
 type OperationKind = 'context' | 'style' | 'analyze' | 'prompt' | 'repair';
 type ApiTier = 'free' | 'paid';
@@ -32,6 +33,11 @@ interface OperationView {
   deadlineAt: number;
   progress: string;
 }
+
+type ContextExtractionFeedback = {
+  tone: 'success' | 'error';
+  message: string;
+};
 
 const OPERATION_DEADLINES: Record<OperationKind, number> = {
   context: 5 * 60_000,
@@ -75,6 +81,7 @@ const App: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [contextLoading, setContextLoading] = useState(false);
+  const [contextExtractionFeedback, setContextExtractionFeedback] = useState<ContextExtractionFeedback | null>(null);
   const [styleLoading, setStyleLoading] = useState(false);
   const [useParallel, setUseParallel] = useState(true);
   const activeOperationRef = useRef<ActiveOperation | null>(null);
@@ -270,25 +277,49 @@ const App: React.FC = () => {
     const operation = beginOperation('context', 'Trích xuất nhân vật và bối cảnh');
     if (!operation) return;
     setContextLoading(true);
+    setContextExtractionFeedback(null);
     try {
-      const { context, characters: chars } = await extractContextAndCharacters(textToExtract, operationOptions(operation));
+      const scriptSnapshot = textToExtract.trim();
+      const contextTask = extractContextAndCharacters(scriptSnapshot, operationOptions(operation));
+      const segmentTask = Promise.resolve().then(() => splitRawScriptIntoSegments(scriptSnapshot));
+      const [contextResult, segmentResult] = await Promise.allSettled([contextTask, segmentTask]);
       if (!isCurrentOperation(operation.id)) return;
-      setGlobalContext(context); 
-      setCharacters(chars);
-      const MAX_CHUNK = 4500;
-      let chunks = []; let remaining = textToExtract;
-      while (remaining.length > 0) {
-        if (remaining.length <= MAX_CHUNK) { chunks.push(remaining.trim()); break; }
-        const chunk = remaining.substring(0, MAX_CHUNK);
-        let splitIndex = chunk.lastIndexOf('\n\n');
-        if (splitIndex === -1 || splitIndex < 3500) splitIndex = chunk.lastIndexOf('\n');
-        if (splitIndex === -1 || splitIndex < 3500) splitIndex = chunk.lastIndexOf('. ');
-        if (splitIndex === -1) splitIndex = MAX_CHUNK;
-        chunks.push(remaining.substring(0, splitIndex).trim());
-        remaining = remaining.substring(splitIndex).trim();
+
+      const feedback: string[] = [];
+      let hadFailure = false;
+      if (contextResult.status === 'fulfilled') {
+        setGlobalContext(contextResult.value.context);
+        setCharacters(contextResult.value.characters);
+        feedback.push(`Đã trích xuất bối cảnh và ${contextResult.value.characters.length} nhân vật`);
+      } else {
+        hadFailure = true;
+        feedback.push(`Trích xuất bối cảnh/nhân vật thất bại: ${readableError(contextResult.reason)}`);
       }
-      if (!isCurrentOperation(operation.id)) return;
-      setProjects(chunks.map((content, i) => ({ id: (Date.now() + i).toString(), name: `Phân đoạn ${i + 1}`, content, scenes: [], promptItems: [], sceneStatus: 'idle', promptStatus: 'idle' })));
+
+      if (segmentResult.status === 'fulfilled' && segmentResult.value.length > 0) {
+        const hasGeneratedWork = projects.some(project => project.scenes.length > 0 || project.promptItems.length > 0);
+        if (hasGeneratedWork) {
+          feedback.push('Đã giữ các phân đoạn cũ vì chúng đã có cảnh hoặc prompt');
+        } else {
+          setProjects(segmentResult.value.map((content, index) => ({
+            id: `${operation.id}-${index}`,
+            name: `Phân đoạn ${index + 1}`,
+            content,
+            scenes: [],
+            promptItems: [],
+            sceneStatus: 'idle' as const,
+            promptStatus: 'idle' as const,
+          })));
+          feedback.push(`Đã chia ${segmentResult.value.length} phân đoạn`);
+        }
+      } else {
+        hadFailure = true;
+        feedback.push(`Chia phân đoạn thất bại: ${segmentResult.status === 'rejected' ? readableError(segmentResult.reason) : 'không có dữ liệu'}`);
+      }
+
+      setContextExtractionFeedback({ tone: hadFailure ? 'error' : 'success', message: feedback.join(' • ') });
+      return;
+
     } catch (error: unknown) {
       if (isCurrentOperation(operation.id)) alert(readableError(error));
     } finally {
@@ -651,7 +682,7 @@ const App: React.FC = () => {
             <ScriptInput 
               projects={projects} rawScript={rawScript} setRawScript={setRawScript} globalContext={globalContext} setGlobalContext={setGlobalContext} 
               customPromptSuffix={customPromptSuffix} setCustomPromptSuffix={setCustomPromptSuffix}
-              onExtractContext={handleExtractContext} isExtractingContext={contextLoading} onAddProject={() => setProjects([...projects, { id: Date.now().toString(), name: `Phân đoạn ${projects.length + 1}`, content: '', scenes: [], promptItems: [], sceneStatus: 'idle', promptStatus: 'idle' }])} onRemoveProject={(id) => setProjects(projects.filter(p => p.id !== id))} onUpdateContent={(id, c) => setProjects(projects.map(p => p.id === id ? { ...p, content: c } : p))} onUpdateName={(id, n) => setProjects(projects.map(p => p.id === id ? { ...p, name: n } : p))} onAnalyze={handleAnalyze} isAnalyzing={loading} styleAnalysis={styleAnalysis} setStyleAnalysis={setStyleAnalysis} styleSummary={styleSummary} setStyleSummary={setStyleSummary} onAnalyzeStyle={handleAnalyzeStyle} isAnalyzingStyle={styleLoading} characters={characters} onUpdateCharacter={(id, f, v) => setCharacters(characters.map(c => c.id === id ? { ...c, [f]: v } : c))} onAddCharacter={() => setCharacters([...characters, { id: `char-${Date.now()}`, name: 'Nhân vật mới', promptName: '', originalName: '', visualDescription: '' }])} onRemoveCharacter={(id) => setCharacters(characters.filter(c => c.id !== id))} onReset={resetApp} imagePreview={imagePreview} setImagePreview={setImagePreview} 
+              onExtractContext={handleExtractContext} isExtractingContext={contextLoading} extractionFeedback={contextExtractionFeedback} onAddProject={() => setProjects([...projects, { id: Date.now().toString(), name: `Phân đoạn ${projects.length + 1}`, content: '', scenes: [], promptItems: [], sceneStatus: 'idle', promptStatus: 'idle' }])} onRemoveProject={(id) => setProjects(projects.filter(p => p.id !== id))} onUpdateContent={(id, c) => setProjects(projects.map(p => p.id === id ? { ...p, content: c } : p))} onUpdateName={(id, n) => setProjects(projects.map(p => p.id === id ? { ...p, name: n } : p))} onAnalyze={handleAnalyze} isAnalyzing={loading} styleAnalysis={styleAnalysis} setStyleAnalysis={setStyleAnalysis} styleSummary={styleSummary} setStyleSummary={setStyleSummary} onAnalyzeStyle={handleAnalyzeStyle} isAnalyzingStyle={styleLoading} characters={characters} onUpdateCharacter={(id, f, v) => setCharacters(characters.map(c => c.id === id ? { ...c, [f]: v } : c))} onAddCharacter={() => setCharacters([...characters, { id: `char-${Date.now()}`, name: 'Nhân vật mới', promptName: '', originalName: '', visualDescription: '' }])} onRemoveCharacter={(id) => setCharacters(characters.filter(c => c.id !== id))} onReset={resetApp} imagePreview={imagePreview} setImagePreview={setImagePreview}
               
               colorStyle={colorStyle}
               setColorStyle={setColorStyle}
