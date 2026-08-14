@@ -10,7 +10,15 @@ import {
   normalizeMaxAttempts,
   runWithWorkerPool,
   runWithRetry,
+  splitIntoBatches,
 } from '../services/aiRuntime';
+
+test('prompt-sized batches keep ordering and cap each request at eight scenes', () => {
+  const batches = splitIntoBatches(Array.from({ length: 17 }, (_, index) => index + 1), 8);
+
+  assert.deepEqual(batches.map(batch => batch.length), [8, 8, 1]);
+  assert.deepEqual(batches.flat(), Array.from({ length: 17 }, (_, index) => index + 1));
+});
 
 test('retry policy is capped at two attempts', async () => {
   assert.equal(normalizeMaxAttempts(99), 2);
