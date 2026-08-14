@@ -8,6 +8,7 @@ import { analyzeSingleSegmentToScenes, generatePromptsForSingleSegment, extractC
 import { createDefaultProject, hydrateProjectsWithReport, serializeProjects } from './state/projectPersistence';
 import { splitRawScriptIntoSegments } from './state/scriptSegmentation';
 import { AbortableFIFOLimiter, runWithWorkerPool } from './services/aiRuntime';
+import { resolveThinkingPolicy } from './services/aiReasoningPolicy';
 
 type OperationKind = 'context' | 'style' | 'analyze' | 'prompt' | 'repair';
 
@@ -30,6 +31,7 @@ interface ActiveOperation {
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
   diagnostic?: AIDiagnostic;
+  diagnostics: Record<string, AIDiagnostic>;
 }
 
 interface OperationView {
@@ -46,6 +48,7 @@ interface OperationView {
   deadlineAt: number;
   progress: string;
   diagnostic?: AIDiagnostic;
+  diagnostics: Record<string, AIDiagnostic>;
 }
 
 type ContextExtractionFeedback = {
@@ -80,6 +83,14 @@ const diagnosticHasOpenRequest = (diagnostic?: AIDiagnostic): boolean =>
   || diagnostic?.phase === 'reading_body'
   || diagnostic?.phase === 'parsing'
   || diagnostic?.phase === 'validating';
+
+const latestDiagnostics = (diagnostics: Record<string, AIDiagnostic>, limit = 6): AIDiagnostic[] =>
+  Object.values(diagnostics)
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, limit);
+
+const openDiagnosticCount = (diagnostics: Record<string, AIDiagnostic>): number =>
+  Object.values(diagnostics).filter(diagnosticHasOpenRequest).length;
 
 const estimateWorkflowDeadline = (kind: 'analyze' | 'prompt', targets: ScriptProject[]): number => {
   const estimatedBatches = kind === 'analyze'
@@ -266,6 +277,13 @@ const App: React.FC = () => {
     setLastFailedDiagnostic(null);
     const selectedProviderId = safeGetItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0]) || 'gemini';
     const provider = AI_PROVIDERS[selectedProviderId] || AI_PROVIDERS[Object.keys(AI_PROVIDERS)[0]];
+    if (provider) {
+      const thinkingPolicy = resolveThinkingPolicy(provider);
+      if (!thinkingPolicy.canRun) {
+        alert(`Không thể chạy ${provider.name}: ${thinkingPolicy.message} Hãy mở Quản lý Key và kiểm tra cấu hình tắt thinking.`);
+        return null;
+      }
+    }
     const providerId = provider?.id || selectedProviderId;
     const speedMode = readSpeedMode();
     const availableKeys = provider ? readStoredJSON<string[]>(`app1_${provider.keyPrefix}_api_keys`, []).filter(key => typeof key === 'string' && key.trim()) : [];
@@ -293,6 +311,7 @@ const App: React.FC = () => {
       deadlineAt,
       controller,
       timer,
+      diagnostics: {},
     };
     activeOperationRef.current = operation;
     setOperationView({
@@ -308,6 +327,7 @@ const App: React.FC = () => {
       startedAt,
       deadlineAt,
       progress: 'Đang chuẩn bị dữ liệu...',
+      diagnostics: {},
     });
     return operation;
   };
@@ -357,8 +377,16 @@ const App: React.FC = () => {
     onDiagnostic: (diagnostic) => {
       if (!isCurrentOperation(operation.id)) return;
       operation.diagnostic = diagnostic;
+      operation.diagnostics = {
+        ...operation.diagnostics,
+        [diagnostic.requestId]: diagnostic,
+      };
+      const retainedDiagnostics = latestDiagnostics(operation.diagnostics, 8);
+      operation.diagnostics = Object.fromEntries(retainedDiagnostics.map(item => [item.requestId, item]));
       if (diagnostic.phase === 'failed') setLastFailedDiagnostic(diagnostic);
-      setOperationView(prev => prev?.id === operation.id ? { ...prev, diagnostic } : prev);
+      setOperationView(prev => prev?.id === operation.id
+        ? { ...prev, diagnostic, diagnostics: operation.diagnostics }
+        : prev);
     },
     ...partial,
   });
@@ -779,6 +807,8 @@ const App: React.FC = () => {
       bodyMs: diagnostic.bodyMs,
       lastChunkMs: diagnostic.lastChunkMs,
       compatibilityFallback: diagnostic.compatibilityFallback,
+      thinkingProfile: diagnostic.thinkingProfile,
+      thinkingStatus: diagnostic.thinkingStatus,
       finishReason: diagnostic.finishReason,
       reasoningTokens: diagnostic.reasoningTokens,
       outputTokens: diagnostic.outputTokens,
@@ -818,7 +848,7 @@ const App: React.FC = () => {
                     ? `Ultra${operationView.effectiveConcurrency === 1 ? ' → Fast' : ''} · ${operationView.kind === 'analyze' || operationView.kind === 'prompt' ? `${operationView.effectiveConcurrency} luồng · 1 API key` : 'bước này chạy đơn'}`
                     : 'Fast · 1 luồng'}</span>
                 <span>{operationView.diagnostic ? diagnosticPhaseLabel[operationView.diagnostic.phase] : `Request AI đang chạy ${operationView.activeRequests}/${operationView.effectiveConcurrency}`}</span>
-                <span>Request AI đang mở {Math.max(operationView.activeRequests, diagnosticHasOpenRequest(operationView.diagnostic) ? 1 : 0)}/{operationView.effectiveConcurrency}</span>
+                <span>Request AI đang mở {Math.max(operationView.activeRequests, openDiagnosticCount(operationView.diagnostics))}/{operationView.effectiveConcurrency}</span>
                 {operationView.totalProjects > 0 && <span>Hoàn thành {operationView.completedProjects}/{operationView.totalProjects} phân đoạn</span>}
                 <span>Đã chạy {formatDuration((operationClock - operationView.startedAt) / 1000)}</span>
                 <span>Giới hạn còn lại {formatDuration((operationView.deadlineAt - operationClock) / 1000)}</span>
@@ -839,6 +869,9 @@ const App: React.FC = () => {
               {operationView.diagnostic.chunkCount !== undefined && (
                 <p className="mt-1 text-slate-500">{operationView.diagnostic.chunkCount} chunks{operationView.diagnostic.lastChunkMs !== undefined ? ` · chunk cuối ${formatDuration(operationView.diagnostic.lastChunkMs / 1_000)}` : ''}</p>
               )}
+              {operationView.diagnostic.thinkingProfile && (
+                <p className="mt-1 text-emerald-300">Thinking: {operationView.diagnostic.thinkingProfile} · {operationView.diagnostic.thinkingStatus || 'unknown'}</p>
+              )}
               {operationView.diagnostic.compatibilityFallback && (
                 <p className="mt-1 text-amber-300">Đã bỏ tham số reasoning không được API hỗ trợ.</p>
               )}
@@ -849,6 +882,16 @@ const App: React.FC = () => {
               <button type="button" onClick={() => void copyDiagnostic(operationView.diagnostic!)} className="mt-2 text-xs font-bold text-indigo-300 hover:text-indigo-100">
                 Sao chép chẩn đoán
               </button>
+              {latestDiagnostics(operationView.diagnostics).length > 1 && (
+                <div className="mt-3 border-t border-slate-700 pt-2 text-[10px] text-slate-400">
+                  <p className="font-bold uppercase tracking-wide text-slate-500">Các request gần nhất</p>
+                  {latestDiagnostics(operationView.diagnostics, 4).map(item => (
+                    <p key={item.requestId} className="mt-1 truncate">
+                      {item.requestId.slice(0, 8)} · {diagnosticPhaseLabel[item.phase]}{item.status ? ` · HTTP ${item.status}` : ''}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <button

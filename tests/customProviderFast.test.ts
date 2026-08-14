@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createOpenAIRequestPayload, getOpenAIChatCompletionsUrl, shouldFallbackWithoutReasoning } from '../services/geminiService';
+import { createOpenAIRequestPayload, getOpenAIChatCompletionsUrl } from '../services/geminiService';
 
 const vilaoProvider = {
   id: 'vilao',
@@ -11,6 +11,7 @@ const vilaoProvider = {
   baseUrl: 'https://api.vilao.ai/v1/',
   keyPrefix: 'vilao',
   group: 'Custom',
+  thinkingStatus: 'verified' as const,
 };
 
 test('keeps the configured base path in the diagnostic endpoint', () => {
@@ -20,16 +21,13 @@ test('keeps the configured base path in the diagnostic endpoint', () => {
   );
 });
 
-test('Fast explicitly disables streaming and requests low reasoning for custom Claude routes', () => {
-  const payload = createOpenAIRequestPayload('hello', undefined, undefined, vilaoProvider, 0.5, true, true) as Record<string, unknown>;
-  assert.equal(payload.stream, false);
-  assert.equal(payload.reasoning_effort, 'low');
-  assert.equal(payload.max_tokens, undefined);
-});
-
-test('only falls back when a provider explicitly rejects the optional reasoning field', () => {
-  assert.equal(shouldFallbackWithoutReasoning(400, 'Unknown parameter: reasoning_effort'), true);
-  assert.equal(shouldFallbackWithoutReasoning(422, 'extra fields not permitted: reasoning_effort'), true);
-  assert.equal(shouldFallbackWithoutReasoning(429, 'rate limit'), false);
-  assert.equal(shouldFallbackWithoutReasoning(400, 'invalid model id'), false);
+test('every speed mode disables streaming and thinking for custom Claude routes', () => {
+  const fastPayload = createOpenAIRequestPayload('hello', undefined, undefined, vilaoProvider, 0.5, true) as Record<string, unknown>;
+  const parallelPayload = createOpenAIRequestPayload('hello', undefined, undefined, vilaoProvider, 0.5, false) as Record<string, unknown>;
+  for (const payload of [fastPayload, parallelPayload]) {
+    assert.equal(payload.stream, false);
+    assert.deepEqual(payload.thinking, { type: 'disabled' });
+  }
+  assert.equal(fastPayload.max_tokens, undefined);
+  assert.equal(parallelPayload.max_tokens, 8192);
 });
