@@ -26,15 +26,27 @@ test('accepts globalContext only as a backwards-compatible alias', () => {
   assert.deepEqual(result.characters, []);
 });
 
+test('accepts known provider wrappers and common field aliases', () => {
+  const result = normalizeContextExtraction({
+    result: {
+      global_context: 'Ancient Rome at dawn.',
+      character_list: [{ prompt_name: 'The Roman leader', is_real_person: 'false' }],
+    },
+  });
+  assert.equal(result.context, 'Ancient Rome at dawn.');
+  assert.equal(result.characters[0].name, 'The Roman leader');
+  assert.equal(result.characters[0].visualDescription, '');
+});
+
 test('rejects empty and malformed extraction responses', () => {
   for (const value of [{}, [], { context: '', characters: [] }, { context: 'Context', characters: {} }]) {
     assert.throws(() => normalizeContextExtraction(value), ContextExtractionValidationError);
   }
 });
 
-test('rejects incomplete character records', () => {
+test('rejects character records without any usable name', () => {
   assert.throws(
-    () => normalizeContextExtraction({ context: 'Context', characters: [{ name: 'Missing fields' }] }),
+    () => normalizeContextExtraction({ context: 'Context', characters: [{ visualDescription: 'Unknown person' }] }),
     ContextExtractionValidationError,
   );
 });
