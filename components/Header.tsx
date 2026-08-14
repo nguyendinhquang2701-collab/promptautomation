@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AI_PROVIDERS, ProviderConfig, loadAIProviders } from '../services/geminiService';
 import { SpeedMode } from '../types';
+import { ThinkingProfile, probeOpenAIThinkingPolicy } from '../services/aiReasoningPolicy';
 
 const safeStorageGet = (key: string): string | null => {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -40,6 +41,8 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
   const [customBaseUrl, setCustomBaseUrl] = useState('https://api.openai.com/v1');
   const [customModelId, setCustomModelId] = useState('');
   const [customApiKey, setCustomApiKey] = useState('');
+  const [customThinkingProfile, setCustomThinkingProfile] = useState<ThinkingProfile>('auto');
+  const [isTestingThinking, setIsTestingThinking] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
@@ -115,7 +118,7 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
     setIsKeyManagerOpen(false);
   };
 
-  const handleSaveCustomModel = () => {
+  const handleSaveCustomModel = async () => {
       if (!customName || !customModelId || !customBaseUrl) {
           alert("Vui lòng điền đủ Tên hiển thị, Mã Model và Link API Server!");
           return;
@@ -147,11 +150,33 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
           type: 'openai-compatible',
           model: customModelId,
           baseUrl: normalizedBaseUrl,
-          keyPrefix: newId,
-          group: '🤖 AI Tùy Chỉnh'
-      };
+           keyPrefix: newId,
+           group: '🤖 AI Tùy Chỉnh',
+           thinkingProfile: customThinkingProfile,
+           thinkingStatus: 'unverified',
+       };
 
-      const existingCustoms = readStoredArray<ProviderConfig>('app1_custom_providers')
+       if (customApiKey.trim()) {
+         setIsTestingThinking(true);
+         try {
+           const probe = await probeOpenAIThinkingPolicy(newConfig, customApiKey.replace(/\s+/g, ''));
+           newConfig.thinkingProfile = probe.profile;
+           newConfig.thinkingStatus = probe.status;
+           newConfig.thinkingMessage = probe.message;
+           newConfig.thinkingCheckedAt = probe.checkedAt;
+           if (probe.status !== 'verified' && probe.status !== 'not-applicable') {
+             alert(`Không lưu để chạy ngay: ${probe.message} Hãy chọn model/profile hỗ trợ tắt thinking.`);
+             return;
+           }
+         } catch (error) {
+           alert(`Không thể kiểm tra cấu hình tắt thinking: ${error instanceof Error ? error.message : String(error)}`);
+           return;
+         } finally {
+           setIsTestingThinking(false);
+         }
+       }
+
+       const existingCustoms = readStoredArray<ProviderConfig>('app1_custom_providers')
           .filter(item => item && typeof item === 'object');
       existingCustoms.push(newConfig);
       localStorage.setItem('app1_custom_providers', JSON.stringify(existingCustoms));
@@ -166,8 +191,36 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
       setProvidersState({ ...AI_PROVIDERS });
       handleProviderChange(newId);
       
-      setCustomName(''); setCustomModelId(''); setCustomApiKey('');
-      setShowCustomModal(false);
+       setCustomName(''); setCustomModelId(''); setCustomApiKey(''); setCustomThinkingProfile('auto');
+       setShowCustomModal(false);
+   };
+
+  const handleTestSelectedProvider = async () => {
+    const config = AI_PROVIDERS[provider];
+    if (!config || !config.id.startsWith('custom_')) return;
+    const key = readStoredArray<string>(`app1_${config.keyPrefix}_api_keys`).find(value => typeof value === 'string' && value.trim());
+    if (!key) {
+      alert('Hãy lưu ít nhất một API key trước khi kiểm tra tắt thinking.');
+      return;
+    }
+    setIsTestingThinking(true);
+    try {
+      const probe = await probeOpenAIThinkingPolicy(config, key.replace(/\s+/g, ''));
+      const customs = readStoredArray<ProviderConfig>('app1_custom_providers').map(item => item.id === config.id
+        ? { ...item, thinkingProfile: probe.profile, thinkingStatus: probe.status, thinkingMessage: probe.message, thinkingCheckedAt: probe.checkedAt }
+        : item,
+      );
+      localStorage.setItem('app1_custom_providers', JSON.stringify(customs));
+      loadAIProviders();
+      setProvidersState({ ...AI_PROVIDERS });
+      alert(probe.status === 'verified' || probe.status === 'not-applicable'
+        ? `Đã xác minh: ${probe.message}`
+        : `Không thể dùng chế độ Thinking Off Required: ${probe.message}`);
+    } catch (error) {
+      alert(`Không thể kiểm tra API: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsTestingThinking(false);
+    }
   };
 
   const handleDeleteCustomModel = (e: React.MouseEvent, idToDelete: string) => {
@@ -350,7 +403,7 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
                     spellCheck="false"
                   />
                   
-                  <div className="flex items-start gap-2 mb-4">
+                   <div className="flex items-start gap-2 mb-4">
                     <input 
                       type="checkbox" 
                       id="terms-checkbox" 
@@ -361,9 +414,18 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
                     <label htmlFor="terms-checkbox" className="text-[10px] text-slate-400 leading-tight cursor-pointer select-none">
                       Tôi đã hiểu và đồng ý với <button type="button" onClick={(e) => { e.preventDefault(); setShowTerms(true); }} className="text-indigo-400 font-bold hover:underline transition-all">Điều khoản bảo mật & Miễn trừ trách nhiệm</button>
                     </label>
-                  </div>
+                   </div>
 
-                  <button 
+                   {currentConfig?.id.startsWith('custom_') && (
+                     <div className="mb-3 rounded-lg border border-slate-700 bg-slate-950/70 p-3 text-[10px] text-slate-400">
+                       <p>Thinking: <span className={currentConfig.thinkingStatus === 'verified' || currentConfig.thinkingStatus === 'not-applicable' ? 'font-bold text-emerald-400' : 'font-bold text-amber-300'}>{currentConfig.thinkingStatus === 'verified' ? 'đã xác minh tắt' : currentConfig.thinkingStatus === 'not-applicable' ? 'không áp dụng' : 'chưa xác minh'}</span></p>
+                       <button type="button" onClick={() => void handleTestSelectedProvider()} disabled={isTestingThinking} className="mt-2 font-bold text-indigo-300 hover:text-indigo-100 disabled:opacity-50">
+                         {isTestingThinking ? 'Đang kiểm tra...' : 'Kiểm tra API & tắt thinking'}
+                       </button>
+                     </div>
+                   )}
+
+                   <button
                     onClick={handleSaveKeys} 
                     disabled={!isAgreed}
                     className={`
@@ -415,10 +477,22 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
                   <p className="text-[10px] text-slate-500 mt-1.5 italic">Không điền /chat/completions ở cuối link.</p>
                </div>
 
-               <div>
-                  <label className="text-[11px] uppercase font-bold text-slate-400 tracking-wider block mb-2">Mã Model (Model ID)</label>
-                  <input type="text" value={customModelId} onChange={e=>setCustomModelId(e.target.value)} placeholder="VD: anthropic/claude-3.5-sonnet" className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-amber-400 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm"/>
-               </div>
+                <div>
+                   <label className="text-[11px] uppercase font-bold text-slate-400 tracking-wider block mb-2">Mã Model (Model ID)</label>
+                   <input type="text" value={customModelId} onChange={e=>setCustomModelId(e.target.value)} placeholder="VD: anthropic/claude-3.5-sonnet" className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-amber-400 focus:outline-none focus:border-indigo-500 transition-colors font-mono text-sm"/>
+                </div>
+
+                <div>
+                   <label className="text-[11px] uppercase font-bold text-slate-400 tracking-wider block mb-2">Profile tắt Thinking</label>
+                   <select value={customThinkingProfile} onChange={e => setCustomThinkingProfile(e.target.value as ThinkingProfile)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-indigo-500">
+                     <option value="auto">Tự nhận diện theo API + model</option>
+                     <option value="none-needed">Model không có reasoning</option>
+                     <option value="openai-none">OpenAI: reasoning_effort = none</option>
+                     <option value="claude-disabled">Claude: thinking = disabled</option>
+                     <option value="deepseek-disabled">DeepSeek: thinking = disabled</option>
+                   </select>
+                   <p className="mt-1.5 text-[10px] text-slate-500">Cấu hình sẽ được kiểm tra trước khi dùng. API không xác nhận tắt thinking sẽ không chạy kịch bản.</p>
+                </div>
 
                <div>
                   <label className="text-[11px] uppercase font-bold text-slate-400 tracking-wider block mb-2">API Key (Khóa bí mật)</label>
@@ -427,9 +501,9 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
                </div>
             </div>
 
-            <button onClick={handleSaveCustomModel} className="mt-8 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2">
+             <button onClick={() => void handleSaveCustomModel()} disabled={isTestingThinking} className="mt-8 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2 disabled:opacity-50">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" /></svg>
-              Lưu cấu hình và Sử dụng ngay
+               {isTestingThinking ? 'Đang kiểm tra Thinking...' : 'Lưu cấu hình và Sử dụng ngay'}
             </button>
           </div>
         </div>

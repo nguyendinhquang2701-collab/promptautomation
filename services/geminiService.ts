@@ -18,6 +18,7 @@ import {
 import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
 import { AIJsonParseError, parseAIJsonResponse, parseFastCompatibleAIJsonResponse } from "./aiJson";
 import { AIDiagnostic, AIDiagnosticPhase, createDiagnosticId, sanitizeDiagnosticText, sanitizeResponsePreview } from "./aiDiagnostics";
+import { ThinkingProfile, ThinkingStatus, ThinkingPolicyError, resolveThinkingPolicy } from "./aiReasoningPolicy";
 
 export type { AIDiagnostic } from "./aiDiagnostics";
 
@@ -30,6 +31,11 @@ export interface ProviderConfig {
   keyPrefix: string; 
   group: string; 
   structuredOutput?: 'json_schema' | 'json_object';
+  thinkingProfile?: ThinkingProfile;
+  thinkingStatus?: ThinkingStatus;
+  thinkingMessage?: string;
+  thinkingCheckedAt?: number;
+  safeConcurrency?: 1 | 2 | 4;
 }
 
 export interface PromptOptions {
@@ -389,18 +395,6 @@ const validateProviderEndpoint = (providerConfig: ProviderConfig): void => {
 export const getOpenAIChatCompletionsUrl = (providerConfig: ProviderConfig): string =>
   `${(providerConfig.baseUrl || '').trim().replace(/\/+$/, '')}/chat/completions`;
 
-const isCustomProvider = (providerConfig: ProviderConfig): boolean =>
-  !Object.prototype.hasOwnProperty.call(DEFAULT_PROVIDERS, providerConfig.id);
-
-const shouldTryLowReasoning = (providerConfig: ProviderConfig, fastCompatible: boolean): boolean =>
-  fastCompatible
-  && isCustomProvider(providerConfig)
-  && /claude|reasoning|thinking|(?:^|[-_/])o[13](?:$|[-_/])/i.test(providerConfig.model);
-
-export const shouldFallbackWithoutReasoning = (status: number, body: string): boolean =>
-  (status === 400 || status === 422)
-  && /reasoning(?:_effort)?|unknown (?:parameter|field)|unsupported (?:parameter|field)|extra fields?/i.test(body);
-
 const readProviderKeys = (providerConfig: ProviderConfig): string[] => {
   try {
     const parsed = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
@@ -421,6 +415,8 @@ const executeGeminiAttempt = async <T>(
   timeoutMs: number,
   onDiagnostic?: (phase: AIDiagnosticPhase, patch?: Partial<AIDiagnostic>) => void,
 ): Promise<T> => {
+  const thinkingPolicy = resolveThinkingPolicy(providerConfig);
+  if (!thinkingPolicy.canRun) throw new ThinkingPolicyError(thinkingPolicy.message);
   const ai = new GoogleGenAI({
     apiKey,
     httpOptions: { retryOptions: { attempts: 1 } },
@@ -428,7 +424,8 @@ const executeGeminiAttempt = async <T>(
   const configData: any = {
     responseMimeType: 'application/json',
     maxOutputTokens: 8192,
-    temperature,
+    ...(thinkingPolicy.omitTemperature ? {} : { temperature }),
+    ...thinkingPolicy.requestPatch,
     responseSchema: schema,
     abortSignal: signal,
     httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
@@ -715,27 +712,22 @@ export const createOpenAIRequestPayload = (
   providerConfig: ProviderConfig,
   temperature: number,
   fastCompatible: boolean,
-  includeLowReasoning: boolean,
-) => ({
-  model: providerConfig.model,
-  messages: buildOpenAIMessages(contents, systemInstruction, schema),
-  temperature,
-  ...(fastCompatible
-    ? {
-      // Some compatibility gateways stream by default unless this is explicit.
-      stream: false,
-      ...(includeLowReasoning ? { reasoning_effort: 'low' } : {}),
-    }
-    : {
+): Record<string, unknown> => {
+  const thinkingPolicy = resolveThinkingPolicy(providerConfig);
+  if (!thinkingPolicy.canRun) throw new ThinkingPolicyError(thinkingPolicy.message);
+  return {
+    model: providerConfig.model,
+    messages: buildOpenAIMessages(contents, systemInstruction, schema),
+    ...(thinkingPolicy.omitTemperature ? {} : { temperature }),
+    // Some compatibility gateways stream by default unless this is explicit.
+    stream: false,
+    ...thinkingPolicy.requestPatch,
+    ...(fastCompatible ? {} : {
       max_tokens: 8192,
-      stream: false,
-      ...(isDeepSeekHost(providerConfig) ? { thinking: { type: 'disabled' } } : {}),
       ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
     }),
-});
-
-const isDeepSeekHost = (providerConfig: ProviderConfig): boolean =>
-  /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
+  };
+};
 
 const executeOpenAIAttempt = async <T>(
   contents: any,
@@ -750,7 +742,7 @@ const executeOpenAIAttempt = async <T>(
 ): Promise<T> => {
   const targetUrl = getOpenAIChatCompletionsUrl(providerConfig);
   onDiagnostic?.('waiting_headers');
-  const sendRequest = (includeLowReasoning: boolean) => fetch(targetUrl, {
+  const sendRequest = () => fetch(targetUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(createOpenAIRequestPayload(
@@ -760,36 +752,13 @@ const executeOpenAIAttempt = async <T>(
       providerConfig,
       temperature,
       fastCompatible,
-      includeLowReasoning,
     )),
     signal,
   });
-  const shouldUseLowReasoning = shouldTryLowReasoning(providerConfig, fastCompatible);
-  let usedCompatibilityFallback = false;
-  let response = await sendRequest(shouldUseLowReasoning);
-  if (!response.ok && shouldUseLowReasoning) {
-    const rejectedBody = await response.text();
-    if (shouldFallbackWithoutReasoning(response.status, rejectedBody)) {
-      usedCompatibilityFallback = true;
-      onDiagnostic?.('connecting', { compatibilityFallback: true });
-      response = await sendRequest(false);
-    } else {
-      let details = rejectedBody.slice(0, 4000);
-      try {
-        const parsed = JSON.parse(rejectedBody);
-        details = parsed?.error?.message || JSON.stringify(parsed).slice(0, 4000);
-      } catch { /* keep bounded plain-text body */ }
-      throw new AIHttpError(response.status, `Server rejected request (HTTP ${response.status}): ${details}`, {
-        details,
-        providerId: providerConfig.id,
-        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
-      });
-    }
-  }
+  const response = await sendRequest();
   onDiagnostic?.('waiting_headers', {
     status: response.status,
     contentType: response.headers.get('content-type') || undefined,
-    compatibilityFallback: usedCompatibilityFallback || undefined,
   });
 
   if (!response.ok) {
@@ -809,7 +778,6 @@ const executeOpenAIAttempt = async <T>(
   onDiagnostic?.('reading_body', {
     status: response.status,
     contentType: response.headers.get('content-type') || undefined,
-    compatibilityFallback: usedCompatibilityFallback || undefined,
   });
   const body = await readResponseBodyForDiagnostics(
     response,
@@ -873,6 +841,7 @@ const callAISafe = async <T>(
   if (!sourceProvider) throw new Error(`[LỖI CẤU HÌNH] Không tìm thấy Model ID '${providerId}'. Vui lòng chọn lại AI.`);
   const providerConfig: ProviderConfig = { ...sourceProvider };
   validateProviderEndpoint(providerConfig);
+  const thinkingPolicy = resolveThinkingPolicy(providerConfig);
   const startedAt = Date.now();
   let diagnostic: AIDiagnostic = {
     requestId: createDiagnosticId(),
@@ -884,8 +853,18 @@ const callAISafe = async <T>(
     endpoint: providerConfig.type === 'openai-compatible'
       ? getOpenAIChatCompletionsUrl(providerConfig)
       : 'Google Gemini API',
+    thinkingProfile: thinkingPolicy.profile,
+    thinkingStatus: thinkingPolicy.status,
   };
   diagnostic = emitDiagnostic(options, diagnostic, 'queued');
+  if (!thinkingPolicy.canRun) {
+    const error = new ThinkingPolicyError(thinkingPolicy.message);
+    diagnostic = emitDiagnostic(options, diagnostic, 'failed', {
+      errorCode: error.code,
+      errorMessage: thinkingPolicy.message,
+    });
+    throw error;
+  }
 
   const keys = readProviderKeys(providerConfig);
   if (keys.length === 0) {

@@ -30,6 +30,8 @@ export interface AIDiagnostic {
   lastChunkMs?: number;
   /** True when an optional compatibility field was rejected and removed. */
   compatibilityFallback?: boolean;
+  thinkingProfile?: string;
+  thinkingStatus?: string;
   finishReason?: string;
   reasoningTokens?: number;
   outputTokens?: number;
