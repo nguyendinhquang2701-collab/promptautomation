@@ -25,10 +25,6 @@ const Header: React.FC = () => {
   const [isProviderDropdownOpen, setIsProviderDropdownOpen] = useState(false);
   const [providersState, setProvidersState] = useState<Record<string, ProviderConfig>>(AI_PROVIDERS);
   
-  // Mặc định an toàn cho key miễn phí; người có gói trả phí có thể chủ động bật đa luồng.
-  const [apiTier, setApiTier] = useState<'free' | 'paid'>('free');
-  const [isTierDropdownOpen, setIsTierDropdownOpen] = useState(false);
-  
   const [isAgreed, setIsAgreed] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
   
@@ -40,12 +36,8 @@ const Header: React.FC = () => {
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const providerDropdownRef = useRef<HTMLDivElement>(null);
-  const tierDropdownRef = useRef<HTMLDivElement>(null); 
 
   useEffect(() => {
-    const savedTier = (safeStorageGet('app1_api_tier') as 'free' | 'paid') || 'free';
-    setApiTier(savedTier);
-
     const savedProvider = safeStorageGet('app1_ai_provider') || 'gemini';
     const activeProvider = AI_PROVIDERS[savedProvider] ? savedProvider : Object.keys(AI_PROVIDERS)[0] || 'gemini';
     setProvider(activeProvider);
@@ -64,7 +56,6 @@ const Header: React.FC = () => {
       if (document.getElementById('custom-ai-modal')?.contains(event.target as Node)) return;
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) setIsKeyManagerOpen(false);
       if (providerDropdownRef.current && !providerDropdownRef.current.contains(event.target as Node)) setIsProviderDropdownOpen(false);
-      if (tierDropdownRef.current && !tierDropdownRef.current.contains(event.target as Node)) setIsTierDropdownOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -79,12 +70,6 @@ const Header: React.FC = () => {
     setKeyInput(savedKeys.join('\n\n'));
     setKeyCount(savedKeys.length);
     setIsProviderDropdownOpen(false);
-  };
-
-  const handleTierChange = (tier: 'free' | 'paid') => {
-    setApiTier(tier);
-    localStorage.setItem('app1_api_tier', tier);
-    setIsTierDropdownOpen(false);
   };
 
   // 👉 THUẬT TOÁN AUTO-HEAL: Nối xương Key gãy & Cắt bằng dòng trống
@@ -207,48 +192,6 @@ const Header: React.FC = () => {
 
           <div className="flex flex-wrap items-center gap-4">
             
-            <div className="relative" ref={tierDropdownRef}>
-              <button
-                 onClick={() => setIsTierDropdownOpen(!isTierDropdownOpen)}
-                 className={`flex items-center justify-between gap-2 px-3 py-2.5 bg-slate-900 border border-slate-800 hover:border-slate-700 hover:bg-slate-800/50 rounded-xl text-sm font-bold transition-all shadow-lg ${apiTier === 'paid' ? 'text-amber-400' : 'text-emerald-400'}`}
-                 title="Tốc độ xử lý API"
-              >
-                 <span>⚡</span>
-                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`w-3.5 h-3.5 text-slate-500 transition-transform duration-300 ${isTierDropdownOpen ? 'rotate-180' : ''}`}>
-                   <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z" clipRule="evenodd" />
-                 </svg>
-              </button>
-
-              {isTierDropdownOpen && (
-                <div className="absolute right-0 top-full mt-2 w-56 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden animate-fade-in py-1">
-                   <button
-                     onClick={() => handleTierChange('paid')}
-                     className={`w-full text-left px-4 py-3 text-xs font-bold transition-colors flex flex-col gap-1
-                       ${apiTier === 'paid' ? 'bg-amber-500/10 text-amber-400' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}
-                     `}
-                   >
-                     <div className="flex items-center justify-between w-full">
-                       <span>🚀 Tài khoản Trả phí / VIP</span>
-                       {apiTier === 'paid' && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]"></span>}
-                     </div>
-                     <span className="text-[10px] text-slate-500 font-normal">Chạy đa luồng siêu tốc.</span>
-                   </button>
-                   <button
-                     onClick={() => handleTierChange('free')}
-                     className={`w-full text-left px-4 py-3 text-xs font-bold transition-colors flex flex-col gap-1 border-t border-slate-700/50
-                       ${apiTier === 'free' ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}
-                     `}
-                   >
-                     <div className="flex items-center justify-between w-full">
-                       <span>🐢 Tài khoản Miễn phí</span>
-                       {apiTier === 'free' && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"></span>}
-                     </div>
-                     <span className="text-[10px] text-slate-500 font-normal">1 luồng an toàn, chống lỗi 429.</span>
-                   </button>
-                </div>
-              )}
-            </div>
-
             <div className="relative" ref={providerDropdownRef}>
               <button
                  onClick={() => setIsProviderDropdownOpen(!isProviderDropdownOpen)}

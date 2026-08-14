@@ -28,10 +28,10 @@ export interface ProviderConfig {
 export interface PromptOptions {
   splitLogic?: string;
   audioMode?: 'remove' | 'keep';
-  // 👉 Bước 2.5 — Visual Planner (chống lặp bố cục). Mặc định paid=BẬT, free=TẮT.
+  // 👉 Bước 2.5 — Visual Planner (chống lặp bố cục). Mặc định BẬT.
   visualPlanner?: boolean;
   // 👉 Bước 3.5 — Audit pass (soi lại prompt đã lắp ráp, lỗi Nặng thì tự viết lại).
-  // Không set → tự theo gói: paid BẬT, free TẮT (tiết kiệm lượt gọi khi bị giới hạn).
+  // Không set → BẬT; người dùng có thể tắt nếu muốn bỏ qua bước phụ trợ này.
   auditPass?: boolean;
 }
 
@@ -39,8 +39,9 @@ export interface AIOperationOptions {
   signal?: AbortSignal;
   deadlineAt?: number;
   providerId?: string;
-  apiTier?: 'free' | 'paid';
   onProgress?: (message: string) => void;
+  onPartialScenes?: (scenes: Scene[]) => void;
+  onPartialPrompts?: (items: PromptItem[]) => void;
   attemptTimeoutMs?: number;
   maxAttempts?: number;
 }
@@ -106,10 +107,9 @@ export const loadAIProviders = () => {
 
 loadAIProviders();
 
-// SCENE/PROMPT_CONCURRENCY: số call chạy song song (gói paid). BATCH_SIZE/PROMPT_BATCH_SIZE
-// càng lớn → càng ÍT round-trip (mỗi call gói nhiều cảnh hơn, vẫn dưới trần 8192 token out).
-// Lưới an toàn (scrub tên/film/banned) vẫn chạy theo TỪNG cảnh nên không bị ảnh hưởng.
-const CONFIG = { SCENE_CONCURRENCY: 3, PROMPT_CONCURRENCY: 4, BATCH_SIZE: 15 };
+// One conservative production pipeline for every provider: a single active
+// request, moderate batches, and a small gap between completed calls.
+const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 5, REQUEST_GAP_MS: 350 };
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
 const DEFAULT_WORKFLOW_TIMEOUT_MS = {
@@ -185,18 +185,27 @@ const getColorDescription = (style: ColorStyle): string => {
 };
 
 type AILane = 'scene' | 'prompt';
-const AI_LIMITERS = {
-  scene: {
-    free: new AbortableFIFOLimiter(1),
-    paid: new AbortableFIFOLimiter(CONFIG.SCENE_CONCURRENCY),
-  },
-  prompt: {
-    free: new AbortableFIFOLimiter(1),
-    paid: new AbortableFIFOLimiter(CONFIG.PROMPT_CONCURRENCY),
-  },
-};
+const AI_LIMITER = new AbortableFIFOLimiter(1);
+let nextRequestAt = 0;
 
-const getAILimiter = (lane: AILane, tier: 'free' | 'paid') => AI_LIMITERS[lane][tier];
+const waitForRequestPace = async (signal?: AbortSignal): Promise<void> => {
+  const delay = Math.max(0, nextRequestAt - Date.now());
+  if (delay > 0) {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(done, delay);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal?.reason || new DOMException('Operation cancelled', 'AbortError'));
+      };
+      function done() {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }
+      if (signal?.aborted) { onAbort(); return; }
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+};
 
 const normalizeOperationOptions = (
   options: AIOperationOptions | undefined,
@@ -204,7 +213,6 @@ const normalizeOperationOptions = (
 ): AIOperationOptions => ({
   ...options,
   providerId: options?.providerId || localStorage.getItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0] || 'gemini'),
-  apiTier: options?.apiTier || (localStorage.getItem('app1_api_tier') === 'paid' ? 'paid' : 'free'),
   deadlineAt: options?.deadlineAt ?? deadlineAfter(workflowTimeoutMs),
   attemptTimeoutMs: options?.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS,
   maxAttempts: Math.min(2, Math.max(1, options?.maxAttempts ?? 2)),
@@ -468,55 +476,57 @@ const callAISafe = async <T>(
     throw new Error(`[LỖI CẤU HÌNH] BẠN CHƯA CÓ API KEY CHO MODEL: ${providerConfig.name.toUpperCase()}`);
   }
   const startIndex = Math.min(keyIndexes[providerConfig.id] || 0, keys.length - 1);
-  // Reserve a key synchronously before the first await. Concurrent paid-tier
-  // calls therefore start on different keys instead of all reading index 0.
+  // Reserve a key synchronously before the first await so consecutive calls
+  // rotate fairly across the configured key pool.
   keyIndexes[providerConfig.id] = (startIndex + 1) % keys.length;
   let keyPool = createKeyPoolState(keys, startIndex);
   const workflowDeadline = options.deadlineAt ?? deadlineAfter(DEFAULT_CALL_TIMEOUT_MS);
   const attemptTimeoutMs = Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
-  const limiter = getAILimiter(lane, options.apiTier || 'free');
+  const limiter = AI_LIMITER;
 
   // Queue time is governed by the workflow deadline, not the per-attempt clock.
-  // Starting retry timers only after FIFO admission prevents queued free-tier
-  // batches from expiring before they ever reach the provider.
+  // FIFO admission keeps every provider request serialized and cancellable.
   return limiter.run(async () => {
-    const callDeadline = Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
-    const result = await runWithRetry<T>(async ({ attempt, signal, maxAttempts }) => {
-      const selected = selectNextKey(keyPool);
-      keyPool = selected.state;
-      if (!selected.selection) throw new Error(`[LỖI CẤU HÌNH] Không còn API key khả dụng cho ${providerConfig.name}.`);
-      const selection = selected.selection;
-      options.onProgress?.(`Đang gọi ${providerConfig.name} (lượt ${attempt}/${maxAttempts})...`);
+    await waitForRequestPace(options.signal);
+    try {
+      const callDeadline = Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
+      return await runWithRetry<T>(async ({ attempt, signal, maxAttempts }) => {
+        const selected = selectNextKey(keyPool);
+        keyPool = selected.state;
+        if (!selected.selection) throw new Error(`[LỖI CẤU HÌNH] Không còn API key khả dụng cho ${providerConfig.name}.`);
+        const selection = selected.selection;
+        options.onProgress?.(`Đang gọi ${providerConfig.name} (lượt ${attempt}/${maxAttempts})...`);
 
-      try {
-        const transportTimeout = Math.max(1, Math.min(attemptTimeoutMs, remainingDeadlineMs(callDeadline)));
-        return providerConfig.type === 'gemini'
-          ? executeGeminiAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, transportTimeout)
-          : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal);
-      } catch (error) {
-        const classification = classifyAIError(error);
-        keyPool = updateKeyState(keyPool, selection.index, classification.keyAction, {
-          cooldownMs: classification.retryAfterMs || 0,
-        });
-        if (classification.keyAction === 'keep') keyPool = { ...keyPool, cursor: selection.index };
-        throw error;
-      }
-    }, {
-      signal: options.signal,
-      deadlineAt: callDeadline,
-      attemptTimeoutMs,
-      maxAttempts: options.maxAttempts,
-      shouldRetry: (classification) => {
-        if (classification.retryable) return true;
-        if (classification.keyAction !== 'disable' && classification.keyAction !== 'cooldown') return false;
-        return keyPool.entries.some((entry) => entry.state === 'ready');
-      },
-      onRetry: (classification, _error, context) => {
-        options.onProgress?.(`${providerConfig.name} lỗi ${classification.kind}; thử lại lần ${context.attempt + 1}/${context.maxAttempts}...`);
-      },
-    });
-
-    return result;
+        try {
+          const transportTimeout = Math.max(1, Math.min(attemptTimeoutMs, remainingDeadlineMs(callDeadline)));
+          return providerConfig.type === 'gemini'
+            ? executeGeminiAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, transportTimeout)
+            : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal);
+        } catch (error) {
+          const classification = classifyAIError(error);
+          keyPool = updateKeyState(keyPool, selection.index, classification.keyAction, {
+            cooldownMs: classification.retryAfterMs || 0,
+          });
+          if (classification.keyAction === 'keep') keyPool = { ...keyPool, cursor: selection.index };
+          throw error;
+        }
+      }, {
+        signal: options.signal,
+        deadlineAt: callDeadline,
+        attemptTimeoutMs,
+        maxAttempts: options.maxAttempts,
+        shouldRetry: (classification) => {
+          if (classification.retryable) return true;
+          if (classification.keyAction !== 'disable' && classification.keyAction !== 'cooldown') return false;
+          return keyPool.entries.some((entry) => entry.state === 'ready');
+        },
+        onRetry: (classification, _error, context) => {
+          options.onProgress?.(`${providerConfig.name} lỗi ${classification.kind}; thử lại lần ${context.attempt + 1}/${context.maxAttempts}...`);
+        },
+      });
+    } finally {
+      nextRequestAt = Date.now() + CONFIG.REQUEST_GAP_MS;
+    }
   }, { signal: options.signal, deadlineAt: workflowDeadline });
 };
 
@@ -1545,7 +1555,7 @@ export const analyzeSingleSegmentToScenes = async (
 
   const charProfiles = buildCharacterProfiles(characters);
 
-  const chunkPromises = batches.map(async (batchTexts, index) => {
+  const processBatch = async (batchTexts: string[], index: number) => {
     const validScenes: Scene[] = batchTexts.map((exactText) => ({
       id: 0, 
       sourceText: exactText, 
@@ -1614,27 +1624,17 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
     }
     
     return { index, chunkScenes: validScenes };
-  });
+  };
 
-  const results = await Promise.allSettled(chunkPromises);
-  let hasError = false;
-  let errorMsg = "";
-  const successfulResults: {index: number, chunkScenes: Scene[]}[] = [];
-
-  results.forEach(res => {
-    if (res.status === 'fulfilled') {
-      successfulResults.push(res.value);
-    } else {
-      hasError = true; 
-      errorMsg = String(res.reason); 
-    }
-  });
-
-  if (hasError) throw new Error(errorMsg);
-
-  successfulResults.sort((a, b) => a.index - b.index).forEach(res => { 
-    res.chunkScenes.forEach(s => { allFinalScenes.push({ ...s, id: globalSceneId++ }); }); 
-  });
+  for (let index = 0; index < batches.length; index++) {
+    if (operation.signal?.aborted) throw operation.signal.reason;
+    const result = await processBatch(batches[index], index);
+    result.chunkScenes.forEach(scene => {
+      allFinalScenes.push({ ...scene, id: globalSceneId++ });
+    });
+    operation.onPartialScenes?.([...allFinalScenes]);
+    operation.onProgress?.(`Đã hoàn thành mẻ ${index + 1}/${batches.length} (${allFinalScenes.length} cảnh)`);
+  }
   
   return allFinalScenes;
 };
@@ -1760,10 +1760,9 @@ export const generatePromptsForSingleSegment = async (
     requiredCharsByScene.set(s.id, req);
   }
   let visualPlans = new Map<number, VisualPlan>();
-  // Planner improves diversity but costs an extra model call. Enable it by
-  // default for paid capacity; free-tier users get the faster path unless they
-  // explicitly opt in through persisted options.
-  const useVisualPlanner = options?.visualPlanner ?? (operation.apiTier === 'paid');
+  // Planner improves diversity but costs an extra model call; it still runs
+  // through the same single-request limiter as every other AI task.
+  const useVisualPlanner = options?.visualPlanner ?? true;
   if (useVisualPlanner) {
     onStatusUpdate?.('Đang quy hoạch bố cục cảnh (chống lặp)...');
     // 👉 (Sửa hiệu năng) KHÔNG nối tiếp toàn cục qua plannerChain nữa: trước đây mọi phân
@@ -1837,9 +1836,8 @@ ${techDetailsStr}
 ${options?.audioMode !== 'keep' ? 'AUDIO: describe visuals only — no dialogue, no on-screen text, no music.' : ''}
 Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese.`;
 
-  const PROMPT_BATCH_SIZE = 8;
   const batches: Scene[][] = [];
-  for (let i = 0; i < segment.scenes.length; i += PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + PROMPT_BATCH_SIZE));
+  for (let i = 0; i < segment.scenes.length; i += CONFIG.PROMPT_BATCH_SIZE) batches.push(segment.scenes.slice(i, i + CONFIG.PROMPT_BATCH_SIZE));
 
   // 👉 Ghép PROMPT JSON theo THÀNH TỐ người dùng đã tick (popup ⚙️): thành tố 'ai' lấy
   // nội dung AI viết; thành tố 'fixed' gắn giá trị cố định. Áp trần độ dài nếu có.
@@ -1867,7 +1865,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
   };
 
   const executeWithProvider = async (providerId: string): Promise<PromptItem[]> => {
-    const batchPromises = batches.map(async (batch, index) => {
+    const processBatch = async (batch: Scene[], index: number): Promise<PromptItem[]> => {
       let pendingBatch = batch;
       let batchLoop = 0;
       const validItems: PromptItem[] = [];
@@ -2040,17 +2038,17 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
       }
 
       return validItems;
-    });
+    };
 
-    const results = await Promise.allSettled(batchPromises);
     const allResults: PromptItem[] = [];
-    let hasError = false; let errorMsg = "";
-    results.forEach(res => {
-      if (res.status === 'fulfilled') allResults.push(...res.value);
-      else { hasError = true; errorMsg = res.reason; }
-    });
-    if (hasError) throw new Error(errorMsg);
-    
+    for (let index = 0; index < batches.length; index++) {
+      if (operation.signal?.aborted) throw operation.signal.reason;
+      const items = await processBatch(batches[index], index);
+      allResults.push(...items);
+      operation.onPartialPrompts?.([...allResults].sort((a, b) => a.sceneId - b.sceneId));
+      operation.onProgress?.(`Đã hoàn thành mẻ ${index + 1}/${batches.length} (${allResults.length} prompt)`);
+    }
+
     return allResults.sort((a, b) => a.sceneId - b.sceneId);
   };
 
