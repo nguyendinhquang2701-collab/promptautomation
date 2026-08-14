@@ -9,6 +9,8 @@ import { createDefaultProject, hydrateProjectsWithReport, serializeProjects } fr
 import { splitRawScriptIntoSegments } from './state/scriptSegmentation';
 import { AbortableFIFOLimiter, runWithWorkerPool } from './services/aiRuntime';
 import { resolveThinkingPolicy } from './services/aiReasoningPolicy';
+import { requestTimeoutForSpeedMode } from './services/aiTimeoutPolicy';
+import { getProjectPromptCompletion, mergePromptItemsByScene } from './state/promptCompletion';
 
 type OperationKind = 'context' | 'style' | 'analyze' | 'prompt' | 'repair';
 
@@ -57,11 +59,11 @@ type ContextExtractionFeedback = {
 };
 
 const OPERATION_DEADLINES: Record<OperationKind, number> = {
-  context: 5 * 60_000,
-  style: 4 * 60_000,
-  analyze: 8 * 60_000,
-  prompt: 12 * 60_000,
-  repair: 5 * 60_000,
+  context: 7.5 * 60_000,
+  style: 6 * 60_000,
+  analyze: 12 * 60_000,
+  prompt: 18 * 60_000,
+  repair: 7.5 * 60_000,
 };
 const MAX_OPERATION_DEADLINE_MS = 60 * 60_000;
 
@@ -98,7 +100,7 @@ const estimateWorkflowDeadline = (kind: 'analyze' | 'prompt', targets: ScriptPro
     : targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.scenes.length / 10) + 1), 0);
   return Math.min(
     MAX_OPERATION_DEADLINE_MS,
-    Math.max(OPERATION_DEADLINES[kind], 120_000 + estimatedBatches * 120_000),
+    Math.max(OPERATION_DEADLINES[kind], 180_000 + estimatedBatches * 180_000),
   );
 };
 
@@ -358,11 +360,7 @@ const App: React.FC = () => {
     speedMode: operation.speedMode,
     keySlot: operation.keySlot,
     requestLimiter: operation.requestLimiter,
-    attemptTimeoutMs: operation.speedMode === 'ultra-max'
-      ? 180_000
-      : operation.speedMode === 'ultra'
-        ? 120_000
-        : undefined,
+    attemptTimeoutMs: requestTimeoutForSpeedMode(operation.speedMode),
     maxAttempts: 2,
     onProgress: (message) => updateOperationProgress(operation, prefix ? `${prefix} • ${message}` : message),
     onConcurrencyDowngrade: (reason) => {
@@ -655,7 +653,12 @@ const App: React.FC = () => {
     }
   };
 
-  const runPromptOperation = async (targets: ScriptProject[], title: string, navigateToResult: boolean) => {
+  const runPromptOperation = async (
+    targets: ScriptProject[],
+    title: string,
+    navigateToResult: boolean,
+    mode: 'replace' | 'repair-missing' = 'replace',
+  ) => {
     if (!requireApiKey() || targets.length === 0) return;
     const operation = beginOperation('prompt', title, estimateWorkflowDeadline('prompt', targets));
     if (!operation) return;
@@ -668,7 +671,7 @@ const App: React.FC = () => {
       ...project,
       promptStatus: 'loading',
       promptErrorMessage: undefined,
-      loadingMessage: 'Đang chuẩn bị tạo prompt...',
+      loadingMessage: mode === 'repair-missing' ? 'Đang chuẩn bị vá prompt còn thiếu...' : 'Đang chuẩn bị tạo prompt...',
       rescueProvider: undefined,
     } : project));
 
@@ -694,24 +697,40 @@ const App: React.FC = () => {
           operationOptions(operation, project.name, {
             onPartialPrompts: (partialItems) => {
               if (!isCurrentOperation(operation.id)) return;
-              setProjects(prev => prev.map(item => item.id === project.id ? {
-                ...item,
-                promptItems: partialItems,
-                promptStatus: 'loading' as const,
-                loadingMessage: 'Đã lưu prompt theo từng mẻ...',
-              } : item));
+              setProjects(prev => prev.map(item => {
+                if (item.id !== project.id) return item;
+                const nextItems = mode === 'repair-missing'
+                  ? mergePromptItemsByScene(item.scenes, item.promptItems, partialItems)
+                  : getProjectPromptCompletion({ scenes: item.scenes, promptItems: partialItems }).completedItems;
+                const progress = getProjectPromptCompletion({ scenes: item.scenes, promptItems: nextItems });
+                return {
+                  ...item,
+                  promptItems: nextItems,
+                  promptStatus: 'loading' as const,
+                  loadingMessage: `Đã lưu ${progress.completedPrompts}/${progress.totalScenes} prompt; đang xử lý phần còn lại...`,
+                };
+              }));
             },
           })
         );
         if (!isCurrentOperation(operation.id)) return;
-        setProjects(prev => prev.map(item => item.id === project.id ? {
-          ...item,
-          promptItems: result.items,
-          rescueProvider: result.rescueProvider,
-          promptStatus: 'success',
-          promptErrorMessage: undefined,
-          loadingMessage: undefined,
-        } : item));
+        setProjects(prev => prev.map(item => {
+          if (item.id !== project.id) return item;
+          const nextItems = mode === 'repair-missing'
+            ? mergePromptItemsByScene(item.scenes, item.promptItems, result.items)
+            : getProjectPromptCompletion({ scenes: item.scenes, promptItems: result.items }).completedItems;
+          const completion = getProjectPromptCompletion({ scenes: item.scenes, promptItems: nextItems });
+          return {
+            ...item,
+            promptItems: nextItems,
+            rescueProvider: result.rescueProvider || item.rescueProvider,
+            promptStatus: completion.isComplete ? 'success' : 'error',
+            promptErrorMessage: completion.isComplete
+              ? undefined
+              : `Còn thiếu ${completion.missingSceneIds.length} prompt cho cảnh: ${completion.missingSceneIds.join(', ')}.`,
+            loadingMessage: undefined,
+          };
+        }));
       } catch (error: unknown) {
         if (isCurrentOperation(operation.id)) {
           setProjects(prev => prev.map(item => item.id === project.id ? {
@@ -756,7 +775,14 @@ const App: React.FC = () => {
   const handleRetryPrompt = async (projectId: string) => {
     const project = projects.find(item => item.id === projectId);
     if (!project || project.scenes.length === 0) return;
-    await runPromptOperation([project], `Thử lại Prompt • ${project.name}`, false);
+    const completion = getProjectPromptCompletion(project);
+    if (completion.isComplete) return;
+    const missingIds = new Set(completion.missingSceneIds);
+    const repairTarget: ScriptProject = {
+      ...project,
+      scenes: project.scenes.filter(scene => missingIds.has(scene.id)),
+    };
+    await runPromptOperation([repairTarget], `Vá ${completion.missingSceneIds.length} Prompt thiếu • ${project.name}`, false, 'repair-missing');
   };
 
   const resetApp = () => {

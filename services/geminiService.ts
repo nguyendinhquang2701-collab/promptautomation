@@ -19,6 +19,13 @@ import { ContextExtractionValidationError, normalizeContextExtraction } from "./
 import { AIJsonParseError, parseAIJsonResponse, parseFastCompatibleAIJsonResponse } from "./aiJson";
 import { AIDiagnostic, AIDiagnosticPhase, createDiagnosticId, sanitizeDiagnosticText, sanitizeResponsePreview } from "./aiDiagnostics";
 import { ThinkingProfile, ThinkingStatus, ThinkingPolicyError, resolveThinkingPolicy } from "./aiReasoningPolicy";
+import {
+  AUXILIARY_REQUEST_TIMEOUT_MS,
+  DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
+  FAST_LOW_PROGRESS_TIMEOUT_MS as FAST_LOW_PROGRESS_LIMIT_MS,
+  REQUEST_TIMEOUT_MS_BY_SPEED_MODE,
+  RESPONSE_BODY_IDLE_TIMEOUT_MS as RESPONSE_BODY_IDLE_LIMIT_MS,
+} from "./aiTimeoutPolicy";
 
 export type { AIDiagnostic } from "./aiDiagnostics";
 
@@ -134,13 +141,13 @@ loadAIProviders();
 const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 10, REQUEST_GAP_MS: 350 };
 // Parallel modes may queue inside an OpenAI-compatible gateway even after it
 // has returned HTTP 200. Allow Ultra Max's longest request policy to finish.
-const DEFAULT_CALL_TIMEOUT_MS = 180_000;
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
+const DEFAULT_CALL_TIMEOUT_MS = REQUEST_TIMEOUT_MS_BY_SPEED_MODE['ultra-max'];
+const DEFAULT_ATTEMPT_TIMEOUT_MS = DEFAULT_AI_ATTEMPT_TIMEOUT_MS;
 // Fast prioritizes a quick, bounded failure over a request that can hold a
 // sequential workflow hostage for several minutes.
-const FAST_REQUEST_TIMEOUT_MS = 120_000;
-const RESPONSE_BODY_IDLE_TIMEOUT_MS = 45_000;
-const FAST_LOW_PROGRESS_TIMEOUT_MS = 90_000;
+const FAST_REQUEST_TIMEOUT_MS = REQUEST_TIMEOUT_MS_BY_SPEED_MODE.fast;
+const RESPONSE_BODY_IDLE_TIMEOUT_MS = RESPONSE_BODY_IDLE_LIMIT_MS;
+const FAST_LOW_PROGRESS_TIMEOUT_MS = FAST_LOW_PROGRESS_LIMIT_MS;
 const FAST_MIN_PROGRESS_BYTES = 32;
 const DEFAULT_WORKFLOW_TIMEOUT_MS = {
   context: 180_000,
@@ -269,7 +276,7 @@ const withAuxiliaryPolicy = (options: AIOperationOptions): AIOperationOptions =>
   ...options,
   ...(options.speedMode === 'fast'
     ? { maxAttempts: 2 }
-    : { attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? 30_000, 30_000), maxAttempts: 1 }),
+    : { attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? AUXILIARY_REQUEST_TIMEOUT_MS, AUXILIARY_REQUEST_TIMEOUT_MS), maxAttempts: 1 }),
 });
 
 const diagnosticErrorCode = (error: unknown): string => {

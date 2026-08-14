@@ -7,7 +7,7 @@
  */
 
 export const DEFAULT_MAX_ATTEMPTS = 2 as const;
-export const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
+export const DEFAULT_ATTEMPT_TIMEOUT_MS = 90_000;
 export const DEFAULT_RETRY_BASE_DELAY_MS = 500;
 export const DEFAULT_RETRY_MAX_DELAY_MS = 8_000;
 
