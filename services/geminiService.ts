@@ -477,14 +477,42 @@ const toOpenAIJsonSchema = (schema: any): any => {
   return converted;
 };
 
-const openAIResponseFormat = (providerConfig: ProviderConfig, schema: any): Record<string, unknown> | undefined => {
-  if (!schema || schema.type !== Type.OBJECT || !providerConfig.structuredOutput) return undefined;
-  if (providerConfig.structuredOutput === 'json_schema') {
+const isCustomOpenAIProvider = (providerConfig: ProviderConfig): boolean =>
+  providerConfig.type === 'openai-compatible' && providerConfig.id.startsWith('custom_');
+
+type OpenAIOutputContract = {
+  schema: any;
+  unwrapItems: boolean;
+  mode?: 'json_schema' | 'json_object';
+};
+
+const openAIOutputContract = (providerConfig: ProviderConfig, schema: any): OpenAIOutputContract => {
+  // Custom OpenAI-compatible gateways commonly support JSON mode without
+  // advertising it. Try the conservative JSON-object contract; a gateway that
+  // explicitly rejects it falls back once in executeOpenAIAttempt.
+  const mode = providerConfig.structuredOutput
+    || (isCustomOpenAIProvider(providerConfig) ? 'json_object' : undefined);
+  if (!schema || !mode) return { schema, unwrapItems: false };
+  if (schema.type !== Type.ARRAY) return { schema, unwrapItems: false, mode };
+  return {
+    schema: {
+      type: Type.OBJECT,
+      properties: { items: schema },
+      required: ['items'],
+    },
+    unwrapItems: true,
+    mode,
+  };
+};
+
+const openAIResponseFormat = (contract: OpenAIOutputContract): Record<string, unknown> | undefined => {
+  if (!contract.schema || !contract.mode) return undefined;
+  if (contract.mode === 'json_schema') {
     return {
       type: 'json_schema',
       json_schema: {
         name: 'automation_response',
-        schema: toOpenAIJsonSchema(schema),
+        schema: toOpenAIJsonSchema(contract.schema),
       },
     };
   }
@@ -714,20 +742,21 @@ export const createOpenAIRequestPayload = (
   providerConfig: ProviderConfig,
   temperature: number,
   fastCompatible: boolean,
+  includeResponseFormat = true,
 ): Record<string, unknown> => {
   const thinkingPolicy = resolveThinkingPolicy(providerConfig);
   if (!thinkingPolicy.canRun) throw new ThinkingPolicyError(thinkingPolicy.message);
+  const outputContract = openAIOutputContract(providerConfig, schema);
+  const responseFormat = includeResponseFormat ? openAIResponseFormat(outputContract) : undefined;
   return {
     model: providerConfig.model,
-    messages: buildOpenAIMessages(contents, systemInstruction, schema),
+    messages: buildOpenAIMessages(contents, systemInstruction, outputContract.schema),
     ...(thinkingPolicy.omitTemperature ? {} : { temperature }),
     // Some compatibility gateways stream by default unless this is explicit.
     stream: false,
     ...thinkingPolicy.requestPatch,
-    ...(fastCompatible ? {} : {
-      max_tokens: 8192,
-      ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
-    }),
+    ...(fastCompatible ? {} : { max_tokens: 8192 }),
+    ...(responseFormat ? { response_format: responseFormat } : {}),
   };
 };
 
@@ -743,8 +772,9 @@ const executeOpenAIAttempt = async <T>(
   onDiagnostic?: (phase: AIDiagnosticPhase, patch?: Partial<AIDiagnostic>) => void,
 ): Promise<T> => {
   const targetUrl = getOpenAIChatCompletionsUrl(providerConfig);
+  const outputContract = openAIOutputContract(providerConfig, schema);
   onDiagnostic?.('waiting_headers');
-  const sendRequest = () => fetch(targetUrl, {
+  const sendRequest = (includeResponseFormat = true) => fetch(targetUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(createOpenAIRequestPayload(
@@ -754,13 +784,25 @@ const executeOpenAIAttempt = async <T>(
       providerConfig,
       temperature,
       fastCompatible,
+      includeResponseFormat,
     )),
     signal,
   });
-  const response = await sendRequest();
+  let response = await sendRequest();
+  let usedFormatFallback = false;
+  if (!response.ok
+    && outputContract.mode
+    && isCustomOpenAIProvider(providerConfig)
+    && (response.status === 400 || response.status === 422)) {
+    // Some gateways reject response_format outright. Retry once without that
+    // transport feature while retaining the JSON-only prompt contract.
+    usedFormatFallback = true;
+    response = await sendRequest(false);
+  }
   onDiagnostic?.('waiting_headers', {
     status: response.status,
     contentType: response.headers.get('content-type') || undefined,
+    compatibilityFallback: usedFormatFallback || undefined,
   });
 
   if (!response.ok) {
@@ -813,10 +855,31 @@ const executeOpenAIAttempt = async <T>(
   if (!text.trim() && details.reasoningContent) {
     throw new AIResponseBodyError('REASONING_WITHOUT_CONTENT', 'Model chỉ trả reasoning mà không có nội dung kết quả. [REASONING_WITHOUT_CONTENT]');
   }
-  let parsed = fastCompatible ? parseFastCompatibleAIJsonResponse(text) : parseAIJsonResponse(text);
-  if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
-    const arrayValues = Object.values(parsed).find((value) => Array.isArray(value));
-    parsed = arrayValues || [];
+  let parsed: unknown;
+  try {
+    parsed = fastCompatible ? parseFastCompatibleAIJsonResponse(text) : parseAIJsonResponse(text);
+  } catch (error) {
+    if (error instanceof AIJsonParseError && details.finishReason === 'stop') {
+      throw new AIJsonParseError(
+        error.code,
+        'AI đã hoàn tất phản hồi nhưng trả văn bản thay vì JSON theo định dạng yêu cầu. [OUTPUT_FORMAT_MISMATCH]',
+        error.rawResponse,
+      );
+    }
+    throw error;
+  }
+  if (outputContract.unwrapItems) {
+    if (Array.isArray(parsed)) {
+      // Prompt-only fallback providers can still return the legacy raw array.
+    } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown }).items)) {
+      parsed = (parsed as { items: unknown[] }).items;
+    } else {
+      throw new AIJsonParseError(
+        'INVALID_JSON',
+        'AI đã hoàn tất phản hồi nhưng không trả object {"items": [...]} theo định dạng yêu cầu. [OUTPUT_FORMAT_MISMATCH]',
+        text,
+      );
+    }
   }
   onDiagnostic?.('validating', { receivedItems: Array.isArray(parsed) ? parsed.length : undefined });
   return parsed as T;
@@ -1178,6 +1241,7 @@ export const DEFAULT_PROMPT_ELEMENTS: PromptElement[] = [
 
 const ELEMENTS_LS_KEY = 'app1_prompt_elements';
 const MAXCHARS_LS_KEY = 'app1_prompt_max_chars';
+export const DEFAULT_MAX_PROMPT_CHARS = 500;
 
 // Ghép catalog mặc định với lựa chọn đã lưu: builtin lấy trạng thái tick + value/instruction
 // người dùng chỉnh; thành tố tự thêm nối vào cuối. App thêm builtin mới vẫn hiện đủ.
@@ -1211,7 +1275,14 @@ export const savePromptElements = (els: PromptElement[]) => {
   try { localStorage.setItem(ELEMENTS_LS_KEY, JSON.stringify(els)); } catch { /* private mode */ }
 };
 export const loadMaxPromptChars = (): number => {
-  try { const v = parseInt(localStorage.getItem(MAXCHARS_LS_KEY) || '0', 10); return Number.isFinite(v) && v > 0 ? v : 0; } catch { return 0; }
+  try {
+    const saved = localStorage.getItem(MAXCHARS_LS_KEY);
+    if (saved === null) return DEFAULT_MAX_PROMPT_CHARS;
+    const value = parseInt(saved, 10);
+    return Number.isFinite(value) && value >= 0 ? value : DEFAULT_MAX_PROMPT_CHARS;
+  } catch {
+    return DEFAULT_MAX_PROMPT_CHARS;
+  }
 };
 export const saveMaxPromptChars = (n: number) => {
   try { localStorage.setItem(MAXCHARS_LS_KEY, String(Math.max(0, Math.floor(n) || 0))); } catch { /* private mode */ }
@@ -2120,14 +2191,15 @@ export const repairFailedScenes = async (
   options?: PromptOptions,
   characters: CharacterIdentity[] = [],
   aiOptions?: AIOperationOptions,
-): Promise<Scene[]> => {
-  if (failedScenes.length === 0) return [];
+): Promise<{ repairedScenes: Scene[]; failedSceneIds: number[]; errors: string[] }> => {
+  if (failedScenes.length === 0) return { repairedScenes: [], failedSceneIds: [], errors: [] };
   const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.repair);
   
   const charProfiles = buildCharacterProfiles(characters);
   let loopCount = 0;
   let pending = [...failedScenes];
   let results: Scene[] = [];
+  const errors: string[] = [];
 
   while (pending.length > 0 && loopCount < 2) {
       loopCount++;
@@ -2168,7 +2240,7 @@ CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' mus
               const scene = pending.find(s => s.id === res.id);
               // 👉 Chốt chặn hình ảnh cấm ở luồng vá cảnh — dính thì để vòng sau tạo lại.
               const bannedHit = findBannedVisual(`${res.visualDescription || ''} ${res.settingTime || ''}`);
-              if (scene && res.visualDescription && (!bannedHit || loopCount >= 2)) {
+              if (scene && res.visualDescription && !bannedHit) {
                   results.push({
                       ...scene,
                       // 👉 Lọc tên thật ngay tại cửa nhập của luồng vá cảnh (trước đây không kiểm tra gì).
@@ -2180,10 +2252,18 @@ CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' mus
               }
           }
           pending = pending.filter(s => !successIds.includes(s.id));
-      } catch (e: any) { throw e; }
+          if (successIds.length > 0) operation.onPartialScenes?.([...results]);
+      } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+          break;
+      }
   }
 
-  return [...results, ...pending];
+  return {
+    repairedScenes: results,
+    failedSceneIds: pending.map(scene => scene.id),
+    errors,
+  };
 };
 
 export const generatePromptsForSingleSegment = async (
@@ -2567,6 +2647,21 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
   return { items };
 };
 
+export const recoverImageStyleFromMarkdown = (raw: string): { analysis: string; summary: string } | null => {
+  const clean = raw.replace(/\*\*/g, '').replace(/`/g, '').trim();
+  const read = (label: string) => clean.match(new RegExp(`(?:^|\\n)\\s*(?:[-*]\\s*)?${label}\\s*:\\s*([^\\n]+)`, 'i'))?.[1]?.trim() || '';
+  const summary = read('summary');
+  const medium = read('medium(?:\\s*/\\s*texture)?');
+  const lighting = read('lighting') || read('color palette');
+  const mood = read('mood') || read('atmosphere');
+  const cinematography = read('cinematography');
+  const texture = read('texture');
+  const rendering = read('rendering style');
+  const analysis = [medium, lighting, mood, cinematography, texture, rendering].filter(Boolean).join('. ');
+  if (!summary || !analysis) return null;
+  return { summary: summary.slice(0, 120), analysis };
+};
+
 export const analyzeImageStyle = async (
   base64Image: string,
   mimeType: string,
@@ -2602,11 +2697,22 @@ CRITICAL RULES:
     }
   ];
 
-  const result = await callAISafe<any>(payload, undefined, STYLE_SCHEMA, 0.2, 'scene', undefined, operation);
-  return {
+  try {
+    const result = await callAISafe<any>(payload, undefined, STYLE_SCHEMA, 0.2, 'scene', undefined, operation);
+    return {
       analysis: result.analysis || "",
       summary: result.summary || ""
-  };
+    };
+  } catch (error) {
+    if (error instanceof AIJsonParseError) {
+      const recovered = recoverImageStyleFromMarkdown(error.rawResponse);
+      if (recovered) {
+        operation.onProgress?.('AI trả dạng ghi chú; app đã tự chuyển thành phân tích phong cách.');
+        return recovered;
+      }
+    }
+    throw error;
+  }
 };
 
 export const extractContextFromScript = async (rawScript: string, aiOptions?: AIOperationOptions) => (await extractContextAndCharacters(rawScript, aiOptions)).context;

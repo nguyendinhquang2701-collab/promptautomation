@@ -501,7 +501,7 @@ const App: React.FC = () => {
     if (navigateToReview) setAppState(AppState.SCENE_REVIEW);
     // Keep existing scenes/prompts until replacement succeeds so cancel/error never destroys prior work.
     setProjects(prev => prev.map(project => targetIds.has(project.id)
-      ? { ...project, sceneStatus: 'loading', sceneErrorMessage: undefined }
+      ? { ...project, sceneStatus: 'loading', sceneErrorMessage: undefined, repairMessage: undefined }
       : project));
 
     let completed = 0;
@@ -532,6 +532,7 @@ const App: React.FC = () => {
           scenes,
           sceneStatus: 'success' as const,
           sceneErrorMessage: undefined,
+          repairMessage: undefined,
           promptItems: [],
           promptStatus: 'idle' as const,
           promptErrorMessage: undefined,
@@ -606,22 +607,39 @@ const App: React.FC = () => {
     }));
 
     try {
-      const repairedScenes = await repairFailedScenes(
+      const repairResult = await repairFailedScenes(
         failedScenes,
         globalContext,
         promptOptions,
         characters,
-        operationOptions(operation, project.name)
+        operationOptions(operation, project.name, {
+          onPartialScenes: (repairedScenes) => {
+            if (!isCurrentOperation(operation.id)) return;
+            const repairedById = new Map(repairedScenes.map(scene => [scene.id, scene]));
+            setProjects(prev => prev.map(item => item.id === projectId ? {
+              ...item,
+              scenes: item.scenes.map(scene => repairedById.has(scene.id)
+                ? { ...repairedById.get(scene.id)!, isRepairing: false }
+                : scene),
+              repairMessage: `Đã vá ${repairedById.size}/${failedScenes.length} cảnh; đang xử lý phần còn lại...`,
+            } : item));
+          },
+        })
       );
       if (!isCurrentOperation(operation.id)) return;
+      const repairedById = new Map(repairResult.repairedScenes.map(scene => [scene.id, scene]));
+      const failedCount = repairResult.failedSceneIds.length;
       setProjects(prev => prev.map(p => {
         if (p.id !== projectId) return p;
         return {
           ...p,
           scenes: p.scenes.map(scene => {
-            const repaired = repairedScenes.find(item => item.id === scene.id);
+            const repaired = repairedById.get(scene.id);
             return repaired ? { ...repaired, isRepairing: false } : { ...scene, isRepairing: false };
           }),
+          repairMessage: failedCount === 0
+            ? `Đã vá thành công ${repairResult.repairedScenes.length}/${failedScenes.length} cảnh.`
+            : `Đã vá ${repairResult.repairedScenes.length}/${failedScenes.length} cảnh; còn ${failedCount} cảnh cần thử lại.${repairResult.errors[0] ? ` ${readableError(repairResult.errors[0])}` : ''}`,
         };
       }));
     } catch (error: unknown) {
@@ -877,7 +895,7 @@ const App: React.FC = () => {
                 <p className="mt-1 text-emerald-300">Thinking: {operationView.diagnostic.thinkingProfile} · {operationView.diagnostic.thinkingStatus || 'unknown'}</p>
               )}
               {operationView.diagnostic.compatibilityFallback && (
-                <p className="mt-1 text-amber-300">Đã bỏ tham số reasoning không được API hỗ trợ.</p>
+                <p className="mt-1 text-amber-300">Đã thử lại bằng chế độ tương thích của API.</p>
               )}
               {operationView.diagnostic.responsePreview && operationView.diagnostic.phase === 'reading_body' && (
                 <p className="mt-1 break-words font-mono text-[10px] text-slate-500">Preview: {operationView.diagnostic.responsePreview}</p>

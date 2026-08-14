@@ -24,6 +24,7 @@ export type AIErrorKind =
   | 'authentication'
   | 'client'
   | 'server'
+  | 'format'
   | 'unknown';
 export type KeyAction = 'keep' | 'next' | 'cooldown' | 'disable';
 
@@ -155,6 +156,15 @@ export const classifyAIError = (error: unknown): AIErrorClassification => {
   if (code === 'PROVIDER_STALLED_BODY' || code === 'BODY_IDLE_TIMEOUT') {
     return {
       kind: 'timeout',
+      retryable: true,
+      keyAction: 'keep',
+      providerFallbackAllowed: false,
+    };
+  }
+
+  if (code === 'INVALID_JSON' || code === 'EMPTY_RESPONSE') {
+    return {
+      kind: 'format',
       retryable: true,
       keyAction: 'keep',
       providerFallbackAllowed: false,

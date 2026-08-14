@@ -22,7 +22,7 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
   // đã xong — dùng chung cho copy đơn, copy tất cả, tải về và badge trên card.
   const positionByKey = new Map<string, number>();
   let __pos = 0;
-  activeProjects.filter(p => p.promptStatus === 'success').forEach(p =>
+  activeProjects.filter(p => p.promptItems.length > 0).forEach(p =>
     p.promptItems.forEach(item => positionByKey.set(`${p.id}-${item.sceneId}`, ++__pos))
   );
 
@@ -38,13 +38,13 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
 
   const handleCopyAll = async () => {
     try {
-      const allItems = activeProjects.filter(p => p.promptStatus === 'success').flatMap(p => p.promptItems);
+      const allItems = activeProjects.flatMap(p => p.promptItems);
       await navigator.clipboard.writeText(numberedPrompts(allItems)); setAllCopied(true); setTimeout(() => setAllCopied(false), 2000);
     } catch (err) { console.error('Failed to copy all', err); }
   };
 
   const executeSingleDownload = (type: 'script' | 'prompt') => {
-    const allItems = activeProjects.filter(p => p.promptStatus === 'success').flatMap(p => p.promptItems);
+    const allItems = activeProjects.flatMap(p => p.promptItems);
     if (allItems.length === 0) return;
     let content = '', fileName = '';
     if (type === 'script') { content = allItems.map(item => item.sourceText).join('\n\n'); fileName = `KichBan_Goc_${new Date().toISOString().slice(0,10)}.txt`; }
@@ -110,7 +110,13 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
                {/* 👉 MÁC ĐÓNG CỨU HỘ Ở HEADER CỦA PHÂN ĐOẠN */}
                <h3 className="text-lg font-bold text-slate-200 bg-slate-900 px-4 py-1 rounded-full border border-slate-800 flex items-center gap-2">
                  {project.name}
-                 <span className="text-slate-500 text-sm font-normal">({project.promptStatus === 'success' ? `${project.promptItems.length} prompts` : project.promptStatus === 'error' ? 'Bị lỗi' : 'Đang xử lý...'})</span>
+                 <span className="text-slate-500 text-sm font-normal">({project.promptStatus === 'success'
+                   ? `${project.promptItems.length} prompts`
+                   : project.promptStatus === 'error'
+                     ? `${project.promptItems.length > 0 ? `${project.promptItems.length} prompt đã giữ · ` : ''}Bị lỗi`
+                     : project.promptItems.length > 0
+                       ? `${project.promptItems.length} prompt đã xong · đang xử lý...`
+                       : 'Đang xử lý...'})</span>
                  
                  {project.rescueProvider && (
                    <span className="bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider font-bold shadow-sm flex items-center gap-1">
@@ -137,12 +143,14 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
                     <span className={`font-bold text-lg block mb-1 ${project.loadingMessage?.includes('lỗi') ? 'text-amber-400' : 'text-indigo-400'}`}>
                       {project.loadingMessage || "Đang viết lại Prompt tối ưu..."}
                     </span>
-                    <span className="text-slate-500 text-xs">Vui lòng đợi trong giây lát, AI đang nhào nặn nghệ thuật!</span>
+                    <span className="text-slate-500 text-xs">{project.promptItems.length > 0
+                      ? `${project.promptItems.length} prompt đã hiển thị bên dưới; kết quả mới sẽ tiếp tục được bổ sung.`
+                      : 'Vui lòng đợi trong giây lát, AI đang nhào nặn nghệ thuật!'}</span>
                   </div>
                 </div>
              )}
 
-             {project.promptStatus === 'success' && (
+             {project.promptItems.length > 0 && (
                 <div className="space-y-6">
                   {project.promptItems.map((item) => (
                     <div key={`${project.id}-${item.sceneId}`} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 hover:border-indigo-500/30 transition-all group relative shadow-xl">

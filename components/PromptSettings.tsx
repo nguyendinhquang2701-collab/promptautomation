@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PromptElement } from '../types';
-import { DEFAULT_PROMPT_ELEMENTS, loadPromptElements, savePromptElements, loadMaxPromptChars, saveMaxPromptChars, buildSamplePrompt } from '../services/geminiService';
+import { DEFAULT_MAX_PROMPT_CHARS, DEFAULT_PROMPT_ELEMENTS, loadPromptElements, savePromptElements, loadMaxPromptChars, saveMaxPromptChars, buildSamplePrompt } from '../services/geminiService';
 
 interface PromptSettingsProps {
   open: boolean;
@@ -16,7 +16,7 @@ const slugKey = (label: string): string => {
 
 const PromptSettings: React.FC<PromptSettingsProps> = ({ open, onClose }) => {
   const [elements, setElements] = useState<PromptElement[]>([]);
-  const [maxChars, setMaxChars] = useState<number>(0);
+  const [maxChars, setMaxChars] = useState<number>(DEFAULT_MAX_PROMPT_CHARS);
   // Form thêm thành tố mới
   const [newLabel, setNewLabel] = useState('');
   const [newMode, setNewMode] = useState<'fixed' | 'ai'>('fixed');
@@ -50,7 +50,7 @@ const PromptSettings: React.FC<PromptSettingsProps> = ({ open, onClose }) => {
 
   const resetDefaults = () => {
     update(DEFAULT_PROMPT_ELEMENTS.map(e => ({ ...e })));
-    updateMax(0);
+    updateMax(DEFAULT_MAX_PROMPT_CHARS);
   };
 
   const sample = useMemo(() => buildSamplePrompt(elements, maxChars), [elements, maxChars]);

@@ -71,6 +71,13 @@ test('a stalled provider body is retried once without rotating the key', () => {
   assert.equal(classification.keyAction, 'keep');
 });
 
+test('a completed response with invalid JSON gets one format retry', () => {
+  const classification = classifyAIError({ code: 'INVALID_JSON', message: 'model returned markdown' });
+  assert.equal(classification.kind, 'format');
+  assert.equal(classification.retryable, true);
+  assert.equal(classification.keyAction, 'keep');
+});
+
 test('attempt timeout is distinct from user cancellation', async () => {
   await assert.rejects(
     runWithRetry(
