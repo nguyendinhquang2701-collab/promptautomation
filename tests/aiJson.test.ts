@@ -22,5 +22,6 @@ test('Fast compatibility parser preserves complete items from a truncated array'
     parseFastCompatibleAIJsonResponse('[{"id":1},{"id":2'),
     [{ id: 1 }],
   );
-  assert.deepEqual(parseFastCompatibleAIJsonResponse('partial response'), []);
+  assert.throws(() => parseFastCompatibleAIJsonResponse('partial response'), AIJsonParseError);
+  assert.throws(() => parseFastCompatibleAIJsonResponse(''), AIJsonParseError);
 });

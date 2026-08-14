@@ -4,7 +4,7 @@ import SceneList from './components/SceneList';
 import PromptOutput from './components/PromptOutput';
 import Header from './components/Header';
 import { AppState, ScriptProject, ColorStyle, CharacterIdentity, SpeedMode } from './types';
-import { analyzeSingleSegmentToScenes, generatePromptsForSingleSegment, extractContextAndCharacters, analyzeImageStyle, AI_PROVIDERS, repairFailedScenes, PromptOptions, AIOperationOptions } from './services/geminiService';
+import { analyzeSingleSegmentToScenes, generatePromptsForSingleSegment, extractContextAndCharacters, analyzeImageStyle, AI_PROVIDERS, repairFailedScenes, PromptOptions, AIOperationOptions, AIDiagnostic } from './services/geminiService';
 import { createDefaultProject, hydrateProjectsWithReport, serializeProjects } from './state/projectPersistence';
 import { splitRawScriptIntoSegments } from './state/scriptSegmentation';
 import { AbortableFIFOLimiter, runWithWorkerPool } from './services/aiRuntime';
@@ -29,6 +29,7 @@ interface ActiveOperation {
   deadlineAt: number;
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
+  diagnostic?: AIDiagnostic;
 }
 
 interface OperationView {
@@ -44,6 +45,7 @@ interface OperationView {
   startedAt: number;
   deadlineAt: number;
   progress: string;
+  diagnostic?: AIDiagnostic;
 }
 
 type ContextExtractionFeedback = {
@@ -59,6 +61,25 @@ const OPERATION_DEADLINES: Record<OperationKind, number> = {
   repair: 5 * 60_000,
 };
 const MAX_OPERATION_DEADLINE_MS = 60 * 60_000;
+
+const diagnosticPhaseLabel: Record<AIDiagnostic['phase'], string> = {
+  queued: 'Đang chờ hàng đợi',
+  connecting: 'Đang kết nối API',
+  waiting_headers: 'Đang chờ phản hồi máy chủ',
+  reading_body: 'Đang nhận dữ liệu phản hồi',
+  parsing: 'Đang đọc JSON phản hồi',
+  validating: 'Đang kiểm tra kết quả',
+  retry_backoff: 'Đang chờ thử lại',
+  completed: 'Đã hoàn tất request',
+  failed: 'Request thất bại',
+};
+
+const diagnosticHasOpenRequest = (diagnostic?: AIDiagnostic): boolean =>
+  diagnostic?.phase === 'connecting'
+  || diagnostic?.phase === 'waiting_headers'
+  || diagnostic?.phase === 'reading_body'
+  || diagnostic?.phase === 'parsing'
+  || diagnostic?.phase === 'validating';
 
 const estimateWorkflowDeadline = (kind: 'analyze' | 'prompt', targets: ScriptProject[]): number => {
   const estimatedBatches = kind === 'analyze'
@@ -125,6 +146,7 @@ const App: React.FC = () => {
   const [styleLoading, setStyleLoading] = useState(false);
   const activeOperationRef = useRef<ActiveOperation | null>(null);
   const [operationView, setOperationView] = useState<OperationView | null>(null);
+  const [lastFailedDiagnostic, setLastFailedDiagnostic] = useState<AIDiagnostic | null>(null);
   const [operationClock, setOperationClock] = useState(() => Date.now());
   
   const [rawScript, setRawScript] = useState(() => safeGetItem('app1_rawScript') || '');
@@ -241,6 +263,7 @@ const App: React.FC = () => {
       alert('Một tác vụ khác đang chạy. Hãy chờ hoàn tất hoặc bấm Hủy tác vụ trước.');
       return null;
     }
+    setLastFailedDiagnostic(null);
     const selectedProviderId = safeGetItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0]) || 'gemini';
     const provider = AI_PROVIDERS[selectedProviderId] || AI_PROVIDERS[Object.keys(AI_PROVIDERS)[0]];
     const providerId = provider?.id || selectedProviderId;
@@ -316,7 +339,7 @@ const App: React.FC = () => {
     keySlot: operation.keySlot,
     requestLimiter: operation.requestLimiter,
     attemptTimeoutMs: operation.speedMode === 'fast' ? undefined : 60_000,
-    maxAttempts: operation.speedMode === 'fast' ? 3 : 2,
+    maxAttempts: 2,
     onProgress: (message) => updateOperationProgress(operation, prefix ? `${prefix} • ${message}` : message),
     onConcurrencyDowngrade: (reason) => {
       if (operation.speedMode === 'fast' || operation.effectiveConcurrency <= 1) return;
@@ -330,6 +353,12 @@ const App: React.FC = () => {
     onRequestActivity: (delta) => {
       operation.activeRequests = Math.max(0, operation.activeRequests + delta);
       setOperationView(prev => prev?.id === operation.id ? { ...prev, activeRequests: operation.activeRequests } : prev);
+    },
+    onDiagnostic: (diagnostic) => {
+      if (!isCurrentOperation(operation.id)) return;
+      operation.diagnostic = diagnostic;
+      if (diagnostic.phase === 'failed') setLastFailedDiagnostic(diagnostic);
+      setOperationView(prev => prev?.id === operation.id ? { ...prev, diagnostic } : prev);
     },
     ...partial,
   });
@@ -734,6 +763,35 @@ const App: React.FC = () => {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  const copyDiagnostic = async (diagnostic: AIDiagnostic) => {
+    const payload = {
+      requestId: diagnostic.requestId,
+      phase: diagnostic.phase,
+      provider: diagnostic.providerName,
+      model: diagnostic.model,
+      endpoint: diagnostic.endpoint,
+      attempt: diagnostic.attempt && diagnostic.maxAttempts ? `${diagnostic.attempt}/${diagnostic.maxAttempts}` : undefined,
+      status: diagnostic.status,
+      contentType: diagnostic.contentType,
+      responseBytes: diagnostic.responseBytes,
+      firstByteMs: diagnostic.firstByteMs,
+      bodyMs: diagnostic.bodyMs,
+      finishReason: diagnostic.finishReason,
+      reasoningTokens: diagnostic.reasoningTokens,
+      outputTokens: diagnostic.outputTokens,
+      receivedItems: diagnostic.receivedItems,
+      errorCode: diagnostic.errorCode,
+      errorMessage: diagnostic.errorMessage,
+      responsePreview: diagnostic.responsePreview,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      alert('Đã sao chép chẩn đoán đã che thông tin nhạy cảm.');
+    } catch {
+      alert('Không thể sao chép tự động. Hãy thử lại trong trình duyệt có quyền clipboard.');
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-200">
       <Header isOperationActive={operationView !== null} />
@@ -756,19 +814,47 @@ const App: React.FC = () => {
                   : operationView.speedMode === 'ultra'
                     ? `Ultra${operationView.effectiveConcurrency === 1 ? ' → Fast' : ''} · ${operationView.kind === 'analyze' || operationView.kind === 'prompt' ? `${operationView.effectiveConcurrency} luồng · 1 API key` : 'bước này chạy đơn'}`
                     : 'Fast · 1 luồng'}</span>
-                <span>Request AI đang chạy {operationView.activeRequests}/{operationView.effectiveConcurrency}</span>
+                <span>{operationView.diagnostic ? diagnosticPhaseLabel[operationView.diagnostic.phase] : `Request AI đang chạy ${operationView.activeRequests}/${operationView.effectiveConcurrency}`}</span>
+                <span>Request AI đang mở {Math.max(operationView.activeRequests, diagnosticHasOpenRequest(operationView.diagnostic) ? 1 : 0)}/{operationView.effectiveConcurrency}</span>
                 {operationView.totalProjects > 0 && <span>Hoàn thành {operationView.completedProjects}/{operationView.totalProjects} phân đoạn</span>}
                 <span>Đã chạy {formatDuration((operationClock - operationView.startedAt) / 1000)}</span>
                 <span>Giới hạn còn lại {formatDuration((operationView.deadlineAt - operationClock) / 1000)}</span>
               </div>
             </div>
           </div>
+          {operationView.diagnostic && (
+            <div className="mt-3 rounded-xl border border-slate-700 bg-slate-900/80 p-3 text-[11px] text-slate-300">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-bold text-slate-100">Chẩn đoán {operationView.diagnostic.requestId.slice(0, 8)}</span>
+                <span className={operationView.diagnostic.phase === 'failed' ? 'font-bold text-red-300' : 'text-indigo-300'}>{diagnosticPhaseLabel[operationView.diagnostic.phase]}</span>
+              </div>
+              <p className="mt-1 break-words text-slate-400">
+                {operationView.diagnostic.status ? `HTTP ${operationView.diagnostic.status} · ` : ''}
+                {operationView.diagnostic.responseBytes !== undefined ? `${operationView.diagnostic.responseBytes.toLocaleString()} bytes · ` : ''}
+                {operationView.diagnostic.bodyMs !== undefined ? `${formatDuration(operationView.diagnostic.bodyMs / 1_000)} body` : 'Đang chờ dữ liệu'}
+              </p>
+              {operationView.diagnostic.errorCode && <p className="mt-1 break-words font-medium text-red-300">{operationView.diagnostic.errorCode}: {operationView.diagnostic.errorMessage}</p>}
+              <button type="button" onClick={() => void copyDiagnostic(operationView.diagnostic!)} className="mt-2 text-xs font-bold text-indigo-300 hover:text-indigo-100">
+                Sao chép chẩn đoán
+              </button>
+            </div>
+          )}
           <button
             type="button"
             onClick={() => stopActiveOperation(operationView.id, false)}
             className="mt-4 w-full rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-sm font-bold text-red-300 transition-colors hover:bg-red-500 hover:text-white"
           >
             Hủy tác vụ và giữ dữ liệu đã hoàn thành
+          </button>
+        </aside>
+      )}
+
+      {!operationView && lastFailedDiagnostic && (
+        <aside className="fixed bottom-5 right-5 z-[100] w-[min(92vw,420px)] rounded-2xl border border-red-500/40 bg-slate-950/95 p-4 shadow-2xl shadow-red-950/40">
+          <p className="font-bold text-red-300">Request AI thất bại: {lastFailedDiagnostic.errorCode || 'REQUEST_FAILED'}</p>
+          <p className="mt-1 break-words text-xs text-slate-300">{lastFailedDiagnostic.errorMessage || 'Có thể sao chép chẩn đoán để xác định nguyên nhân.'}</p>
+          <button type="button" onClick={() => void copyDiagnostic(lastFailedDiagnostic)} className="mt-3 text-xs font-bold text-indigo-300 hover:text-indigo-100">
+            Sao chép chẩn đoán
           </button>
         </aside>
       )}
