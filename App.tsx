@@ -298,48 +298,47 @@ const App: React.FC = () => {
     setContextExtractionFeedback(null);
     try {
       const scriptSnapshot = textToExtract.trim();
-      const contextTask = extractContextAndCharacters(scriptSnapshot, operationOptions(operation));
-      const segmentTask = Promise.resolve().then(() => splitRawScriptIntoSegments(scriptSnapshot));
-      const [contextResult, segmentResult] = await Promise.allSettled([contextTask, segmentTask]);
+      updateOperationProgress(operation, 'Đang gửi toàn bộ kịch bản để trích xuất bối cảnh và nhân vật...');
+      const extraction = await extractContextAndCharacters(scriptSnapshot, operationOptions(operation));
       if (!isCurrentOperation(operation.id)) return;
 
-      const feedback: string[] = [];
-      let hadFailure = false;
-      if (contextResult.status === 'fulfilled') {
-        setGlobalContext(contextResult.value.context);
-        setCharacters(contextResult.value.characters);
-        feedback.push(`Đã trích xuất bối cảnh và ${contextResult.value.characters.length} nhân vật`);
-      } else {
-        hadFailure = true;
-        feedback.push(`Trích xuất bối cảnh/nhân vật thất bại: ${readableError(contextResult.reason)}`);
+      updateOperationProgress(operation, 'Đã trích xuất xong. Đang chia phân đoạn...');
+      const segments = splitRawScriptIntoSegments(scriptSnapshot);
+      if (segments.length === 0) throw new Error('Không thể chia kịch bản thành phân đoạn. [SEGMENTATION_EMPTY]');
+
+      const hasGeneratedWork = projects.some(project => project.scenes.length > 0 || project.promptItems.length > 0);
+      setGlobalContext(extraction.context);
+      setCharacters(extraction.characters);
+      if (hasGeneratedWork) {
+        setContextExtractionFeedback({
+          tone: 'success',
+          message: `Đã trích xuất bối cảnh và ${extraction.characters.length} nhân vật. Giữ các phân đoạn cũ vì chúng đã có cảnh hoặc prompt.`,
+        });
+        return;
       }
 
-      if (segmentResult.status === 'fulfilled' && segmentResult.value.length > 0) {
-        const hasGeneratedWork = projects.some(project => project.scenes.length > 0 || project.promptItems.length > 0);
-        if (hasGeneratedWork) {
-          feedback.push('Đã giữ các phân đoạn cũ vì chúng đã có cảnh hoặc prompt');
-        } else {
-          setProjects(segmentResult.value.map((content, index) => ({
-            id: `${operation.id}-${index}`,
-            name: `Phân đoạn ${index + 1}`,
-            content,
-            scenes: [],
-            promptItems: [],
-            sceneStatus: 'idle' as const,
-            promptStatus: 'idle' as const,
-          })));
-          feedback.push(`Đã chia ${segmentResult.value.length} phân đoạn`);
-        }
-      } else {
-        hadFailure = true;
-        feedback.push(`Chia phân đoạn thất bại: ${segmentResult.status === 'rejected' ? readableError(segmentResult.reason) : 'không có dữ liệu'}`);
-      }
-
-      setContextExtractionFeedback({ tone: hadFailure ? 'error' : 'success', message: feedback.join(' • ') });
+      setProjects(segments.map((content, index) => ({
+        id: `${operation.id}-${index}`,
+        name: `Phân đoạn ${index + 1}`,
+        content,
+        scenes: [],
+        promptItems: [],
+        sceneStatus: 'idle' as const,
+        promptStatus: 'idle' as const,
+      })));
+      setContextExtractionFeedback({
+        tone: 'success',
+        message: `Đã trích xuất bối cảnh và ${extraction.characters.length} nhân vật • Đã chia ${segments.length} phân đoạn`,
+      });
       return;
 
     } catch (error: unknown) {
-      if (isCurrentOperation(operation.id)) alert(readableError(error));
+      if (isCurrentOperation(operation.id)) {
+        setContextExtractionFeedback({
+          tone: 'error',
+          message: `Trích xuất bối cảnh và nhân vật thất bại: ${readableError(error)}`,
+        });
+      }
     } finally {
       finishOperation(operation, 'Tác vụ trích xuất đã kết thúc trước khi hoàn tất. Dữ liệu nháp vẫn được giữ lại.');
     }

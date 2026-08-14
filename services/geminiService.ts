@@ -14,6 +14,7 @@ import {
   updateKeyState,
 } from "./aiRuntime";
 import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
+import { AIJsonParseError, parseAIJsonResponse } from "./aiJson";
 
 export interface ProviderConfig {
   id: string;
@@ -23,6 +24,7 @@ export interface ProviderConfig {
   baseUrl?: string;
   keyPrefix: string; 
   group: string; 
+  structuredOutput?: 'json_schema' | 'json_object';
 }
 
 export interface PromptOptions {
@@ -47,12 +49,12 @@ export interface AIOperationOptions {
 }
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
-  'gpt-4o': { id: 'gpt-4o', name: 'ChatGPT 4o', type: 'openai-compatible', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', keyPrefix: 'openai', group: 'OpenAI' },
-  'gpt-4o-mini': { id: 'gpt-4o-mini', name: 'ChatGPT 4o Mini', type: 'openai-compatible', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1', keyPrefix: 'openai', group: 'OpenAI' },
+  'gpt-4o': { id: 'gpt-4o', name: 'ChatGPT 4o', type: 'openai-compatible', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', keyPrefix: 'openai', group: 'OpenAI', structuredOutput: 'json_schema' },
+  'gpt-4o-mini': { id: 'gpt-4o-mini', name: 'ChatGPT 4o Mini', baseUrl: 'https://api.openai.com/v1', type: 'openai-compatible', model: 'gpt-4o-mini', keyPrefix: 'openai', group: 'OpenAI', structuredOutput: 'json_schema' },
   gemini: { id: 'gemini', name: 'Gemini 2.5 Flash', type: 'gemini', model: 'gemini-2.5-flash', keyPrefix: 'gemini', group: 'Google' },
-  deepseek: { id: 'deepseek', name: 'Deepseek V4', type: 'openai-compatible', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com/v1', keyPrefix: 'deepseek', group: 'Deepseek' },
-  grok: { id: 'grok', name: 'Grok 4.1', type: 'openai-compatible', model: 'grok-4-1-fast-reasoning', baseUrl: 'https://api.x.ai/v1', keyPrefix: 'grok', group: 'xAI' },
-  mistral: { id: 'mistral', name: 'Mistral Large', type: 'openai-compatible', model: 'mistral-large-latest', baseUrl: 'https://api.mistral.ai/v1', keyPrefix: 'mistral', group: 'Mistral' }
+  deepseek: { id: 'deepseek', name: 'Deepseek V4', type: 'openai-compatible', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com/v1', keyPrefix: 'deepseek', group: 'Deepseek', structuredOutput: 'json_object' },
+  grok: { id: 'grok', name: 'Grok 4.1', type: 'openai-compatible', model: 'grok-4-1-fast-reasoning', baseUrl: 'https://api.x.ai/v1', keyPrefix: 'grok', group: 'xAI', structuredOutput: 'json_object' },
+  mistral: { id: 'mistral', name: 'Mistral Large', type: 'openai-compatible', model: 'mistral-large-latest', baseUrl: 'https://api.mistral.ai/v1', keyPrefix: 'mistral', group: 'Mistral', structuredOutput: 'json_object' }
 };
 
 const getProviderEndpointError = (providerConfig: ProviderConfig): string | null => {
@@ -373,13 +375,44 @@ const executeGeminiAttempt = async <T>(
       calls: 1,
     });
   }
-  return JSON.parse(sanitizeJSONString(response.text || '[]')) as T;
+  return parseAIJsonResponse<T>(response.text || '');
+};
+
+const toOpenAIJsonSchema = (schema: any): any => {
+  if (!schema || typeof schema !== 'object') return schema;
+  const type = typeof schema.type === 'string' ? schema.type.toLowerCase() : undefined;
+  const converted: Record<string, unknown> = {
+    ...(type ? { type } : {}),
+    ...(typeof schema.description === 'string' ? { description: schema.description } : {}),
+    ...(Array.isArray(schema.required) ? { required: schema.required } : {}),
+  };
+  if (schema.properties && typeof schema.properties === 'object') {
+    converted.properties = Object.fromEntries(
+      Object.entries(schema.properties).map(([key, value]) => [key, toOpenAIJsonSchema(value)]),
+    );
+  }
+  if (schema.items) converted.items = toOpenAIJsonSchema(schema.items);
+  return converted;
+};
+
+const openAIResponseFormat = (providerConfig: ProviderConfig, schema: any): Record<string, unknown> | undefined => {
+  if (!schema || schema.type !== Type.OBJECT || !providerConfig.structuredOutput) return undefined;
+  if (providerConfig.structuredOutput === 'json_schema') {
+    return {
+      type: 'json_schema',
+      json_schema: {
+        name: 'automation_response',
+        schema: toOpenAIJsonSchema(schema),
+      },
+    };
+  }
+  return { type: 'json_object' };
 };
 
 const buildOpenAIMessages = (contents: any, systemInstruction: string | undefined, schema: any): any[] => {
   let finalSystemInstruction = systemInstruction || 'You are a helpful assistant.';
   finalSystemInstruction += `\n\nCRITICAL DIRECTIVE: You MUST output STRICTLY valid JSON matching the exact requested structure. Do not include markdown formatting. Do NOT add a preamble, greeting, explanation, or commentary. Return only raw JSON data.`;
-  if (schema) finalSystemInstruction += `\nEXPECTED JSON SCHEMA FORMAT:\n${JSON.stringify(schema)}`;
+  if (schema) finalSystemInstruction += `\nEXPECTED JSON SCHEMA FORMAT:\n${JSON.stringify(toOpenAIJsonSchema(schema))}`;
   const messages: any[] = [{ role: 'system', content: finalSystemInstruction }];
 
   const pushParts = (parts: any[]) => {
@@ -427,6 +460,7 @@ const executeOpenAIAttempt = async <T>(
       max_tokens: 8192,
       stream: false,
       ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {}),
+      ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
     }),
     signal,
   });
@@ -446,8 +480,8 @@ const executeOpenAIAttempt = async <T>(
   }
 
   const rawBody = await response.text();
-  const text = extractOpenAIContent(rawBody) || '[]';
-  let parsed = JSON.parse(sanitizeJSONString(text));
+  const text = extractOpenAIContent(rawBody);
+  let parsed = parseAIJsonResponse(text);
   if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
     const arrayValues = Object.values(parsed).find((value) => Array.isArray(value));
     parsed = arrayValues || [];
@@ -1430,12 +1464,18 @@ export const extractContextAndCharacters = async (
   rawScript: string,
   aiOptions?: AIOperationOptions,
   allowFormatRetry = true,
+  formatCorrection = false,
 ): Promise<{ context: string; characters: CharacterIdentity[] }> => {
   if (!rawScript || rawScript.trim().length === 0) return { context: "", characters: [] };
+  // Keep the full script intact, but fail clearly before asking a provider to
+  // process more text than the conservative shared-context budget allows.
+  if (rawScript.length > 120_000) {
+    throw new Error('Kịch bản quá dài để trích xuất trong một lần. Hãy dùng model có context lớn hơn hoặc rút gọn kịch bản. [CONTEXT_LIMIT]');
+  }
   const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.context);
   try {
     const result = await callAISafe<any>(
-      `SCRIPT:\n"${rawScript}"\n\nReturn one JSON object with exactly these top-level fields: "context" (a non-empty string) and "characters" (an array). Do not use "globalContext".`,
+      `SCRIPT:\n${rawScript}\n\nReturn one JSON object with exactly these top-level fields: "context" (a non-empty string) and "characters" (an array). Do not use "globalContext".${formatCorrection ? '\n\nFORMAT CORRECTION: A previous response could not be validated. Return the complete object now. Do not omit context, do not wrap it in result/data/output, and do not include any text outside JSON.' : ''}`,
       `Analyze this script.
 1. Extract a DENSE "context" including: Year/Era, Specific Locations, Weather/Lighting variations, Overall Cinematic Atmosphere/Mood, and the core narrative arc. This context MUST anchor the visual consistency of the entire video. The context MUST NOT contain the real name of any public figure (see REAL-PERSON NAME SAFETY) — use the invented substitute name or a generic descriptor instead.
 2. Extract all distinct characters/subjects.
@@ -1462,9 +1502,9 @@ Output strictly valid JSON.`,
     try {
       normalized = normalizeContextExtraction(result);
     } catch (error) {
-      if (error instanceof ContextExtractionValidationError && allowFormatRetry) {
+      if ((error instanceof ContextExtractionValidationError || error instanceof AIJsonParseError) && allowFormatRetry) {
         operation.onProgress?.('AI trả dữ liệu chưa đúng định dạng; đang yêu cầu lại một lần...');
-        return extractContextAndCharacters(rawScript, { ...aiOptions, maxAttempts: 1 }, false);
+        return extractContextAndCharacters(rawScript, { ...aiOptions, maxAttempts: 1 }, false, true);
       }
       throw error;
     }
@@ -1535,7 +1575,7 @@ Output strictly valid JSON.`,
     if (message.includes("MISSING_") || message.includes("[LỖI CẤU HÌNH]")) throw e;
     // 👉 Không nuốt lỗi trong im lặng nữa: trước đây trả {context:"", characters:[]} khiến
     // App ghi đè danh bạ nhân vật bằng rỗng mà người dùng không biết → lưới chặn tê liệt.
-    throw new Error(`Trích xuất bối cảnh & nhân vật thất bại: ${message}`);
+    throw e;
   }
 };
 
