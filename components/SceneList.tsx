@@ -68,7 +68,13 @@ const SceneList: React.FC<SceneListProps> = ({
                <div className="flex items-center gap-3 mb-4">
                  <div className="h-px bg-slate-800 flex-1"></div>
                  <h3 className="text-lg font-bold text-slate-200 bg-slate-900 px-4 py-1 rounded-full border border-slate-800">
-                   {project.name} <span className="text-slate-500 text-sm font-normal">({project.sceneStatus === 'success' ? `${project.scenes.length} nhịp 8s` : project.sceneStatus === 'error' ? 'Bị lỗi' : 'Đang xử lý...'})</span>
+                   {project.name} <span className="text-slate-500 text-sm font-normal">({project.sceneStatus === 'success'
+                     ? `${project.scenes.length} nhịp 8s`
+                     : project.sceneStatus === 'error'
+                       ? `${project.scenes.length > 0 ? `${project.scenes.length} cảnh đã giữ · ` : ''}Bị lỗi`
+                       : project.scenes.length > 0
+                         ? `${project.scenes.length} cảnh đã xong · đang xử lý...`
+                         : 'Đang xử lý...'})</span>
                  </h3>
                  
                  {hasFailedScenes && (
@@ -83,19 +89,27 @@ const SceneList: React.FC<SceneListProps> = ({
                  <div className="h-px bg-slate-800 flex-1"></div>
                </div>
 
-               {project.sceneStatus === 'error' ? (
+               {project.repairMessage && (
+                 <p className="mb-3 text-center text-xs font-medium text-indigo-300">{project.repairMessage}</p>
+               )}
+
+               {project.sceneStatus === 'error' && (
                  <div className="bg-red-950/30 border border-red-500/50 rounded-2xl p-6 text-center shadow-lg">
                    <div className="w-12 h-12 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-3"><span className="text-2xl">⚠️</span></div>
                    <h3 className="text-red-400 font-bold mb-2">Đã xảy ra lỗi khi chia cảnh đoạn này!</h3>
                    <p className="text-red-300 text-sm mb-4 font-mono">{project.sceneErrorMessage}</p>
                    <button onClick={() => onRetryAnalyze(project.id)} className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-6 rounded-lg transition-all shadow-lg shadow-red-900/50">🔄 Nhấp để thử lại riêng đoạn này</button>
                  </div>
-               ) : project.sceneStatus === 'loading' ? (
+               )}
+               {project.sceneStatus === 'loading' && (
                  <div className="flex justify-center items-center py-10 border border-indigo-500/30 rounded-2xl bg-slate-900/50">
                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
-                   <span className="ml-3 text-indigo-400 font-bold">Đang xử lý phân đoạn này...</span>
+                   <span className="ml-3 text-indigo-400 font-bold">{project.scenes.length > 0
+                     ? `Đã hiển thị ${project.scenes.length} cảnh · đang xử lý phần còn lại...`
+                     : 'Đang xử lý phân đoạn này...'}</span>
                  </div>
-               ) : (
+               )}
+               {project.scenes.length > 0 && (
                  <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-2">
                     {project.scenes.map((scene) => {
                       const isFailed = scene.visualDescription === "";

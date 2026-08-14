@@ -1,10 +1,12 @@
 export class AIJsonParseError extends Error {
   readonly code: 'EMPTY_RESPONSE' | 'INVALID_JSON';
+  readonly rawResponse: string;
 
-  constructor(code: 'EMPTY_RESPONSE' | 'INVALID_JSON', message: string) {
+  constructor(code: 'EMPTY_RESPONSE' | 'INVALID_JSON', message: string, rawResponse = '') {
     super(message);
     this.name = 'AIJsonParseError';
     this.code = code;
+    this.rawResponse = rawResponse;
   }
 }
 
@@ -32,7 +34,7 @@ const extractBalancedJSON = (text: string, open: '[' | '{', close: ']' | '}'): s
 /** Parses model output without inventing a fallback value. */
 export const parseAIJsonResponse = <T>(rawResponse: string): T => {
   const raw = rawResponse.trim();
-  if (!raw) throw new AIJsonParseError('EMPTY_RESPONSE', 'AI không trả về nội dung. [EMPTY_RESPONSE]');
+  if (!raw) throw new AIJsonParseError('EMPTY_RESPONSE', 'AI không trả về nội dung. [EMPTY_RESPONSE]', rawResponse);
 
   const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fence?.[1]?.trim() || raw;
@@ -48,7 +50,7 @@ export const parseAIJsonResponse = <T>(rawResponse: string): T => {
       try { return JSON.parse(balanced) as T; } catch { /* throw a stable error below */ }
     }
   }
-  throw new AIJsonParseError('INVALID_JSON', 'AI trả về JSON không hợp lệ hoặc phản hồi bị cắt. [INVALID_JSON]');
+  throw new AIJsonParseError('INVALID_JSON', 'AI trả về JSON không hợp lệ hoặc phản hồi bị cắt. [INVALID_JSON]', rawResponse);
 };
 
 /**

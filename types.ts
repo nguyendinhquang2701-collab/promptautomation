@@ -49,6 +49,7 @@ export interface ScriptProject {
   // tránh lỗi của bước này hiển thị nhầm sang bước kia.
   sceneStatus: StepStatus;
   sceneErrorMessage?: string;
+  repairMessage?: string;
   promptStatus: StepStatus;
   promptErrorMessage?: string;
   loadingMessage?: string;
