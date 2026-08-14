@@ -774,8 +774,11 @@ const App: React.FC = () => {
       status: diagnostic.status,
       contentType: diagnostic.contentType,
       responseBytes: diagnostic.responseBytes,
+      chunkCount: diagnostic.chunkCount,
       firstByteMs: diagnostic.firstByteMs,
       bodyMs: diagnostic.bodyMs,
+      lastChunkMs: diagnostic.lastChunkMs,
+      compatibilityFallback: diagnostic.compatibilityFallback,
       finishReason: diagnostic.finishReason,
       reasoningTokens: diagnostic.reasoningTokens,
       outputTokens: diagnostic.outputTokens,
@@ -833,6 +836,15 @@ const App: React.FC = () => {
                 {operationView.diagnostic.responseBytes !== undefined ? `${operationView.diagnostic.responseBytes.toLocaleString()} bytes · ` : ''}
                 {operationView.diagnostic.bodyMs !== undefined ? `${formatDuration(operationView.diagnostic.bodyMs / 1_000)} body` : 'Đang chờ dữ liệu'}
               </p>
+              {operationView.diagnostic.chunkCount !== undefined && (
+                <p className="mt-1 text-slate-500">{operationView.diagnostic.chunkCount} chunks{operationView.diagnostic.lastChunkMs !== undefined ? ` · chunk cuối ${formatDuration(operationView.diagnostic.lastChunkMs / 1_000)}` : ''}</p>
+              )}
+              {operationView.diagnostic.compatibilityFallback && (
+                <p className="mt-1 text-amber-300">Đã bỏ tham số reasoning không được API hỗ trợ.</p>
+              )}
+              {operationView.diagnostic.responsePreview && operationView.diagnostic.phase === 'reading_body' && (
+                <p className="mt-1 break-words font-mono text-[10px] text-slate-500">Preview: {operationView.diagnostic.responsePreview}</p>
+              )}
               {operationView.diagnostic.errorCode && <p className="mt-1 break-words font-medium text-red-300">{operationView.diagnostic.errorCode}: {operationView.diagnostic.errorMessage}</p>}
               <button type="button" onClick={() => void copyDiagnostic(operationView.diagnostic!)} className="mt-2 text-xs font-bold text-indigo-300 hover:text-indigo-100">
                 Sao chép chẩn đoán

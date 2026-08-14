@@ -22,8 +22,14 @@ export interface AIDiagnostic {
   status?: number;
   contentType?: string;
   responseBytes?: number;
+  /** Number of chunks received from a streamed or chunked HTTP body. */
+  chunkCount?: number;
   firstByteMs?: number;
   bodyMs?: number;
+  /** Milliseconds from the start of body reading until the newest chunk. */
+  lastChunkMs?: number;
+  /** True when an optional compatibility field was rejected and removed. */
+  compatibilityFallback?: boolean;
   finishReason?: string;
   reasoningTokens?: number;
   outputTokens?: number;
