@@ -29,3 +29,46 @@ test('reports a stable timeout when a response body stops producing chunks', asy
     (error: unknown) => error instanceof Error && /BODY_IDLE_TIMEOUT/.test(error.message),
   );
 });
+
+test('identifies a provider that sends a few bytes and then stalls', async () => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('{} '));
+    },
+  });
+
+  await assert.rejects(
+    readResponseBodyForDiagnostics(new Response(stream), () => undefined, {
+      idleTimeoutMs: 5,
+      lowProgressTimeoutMs: 100,
+      minProgressBytes: 32,
+      maxDurationMs: 100,
+    }),
+    (error: unknown) => (error as { code?: string }).code === 'PROVIDER_STALLED_BODY',
+  );
+});
+
+test('does not let tiny heartbeat chunks keep a Fast response open forever', async () => {
+  const encoder = new TextEncoder();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(' '));
+      timer = setInterval(() => controller.enqueue(encoder.encode(' ')), 2);
+    },
+    cancel() {
+      if (timer) clearInterval(timer);
+    },
+  });
+
+  await assert.rejects(
+    readResponseBodyForDiagnostics(new Response(stream), () => undefined, {
+      idleTimeoutMs: 50,
+      lowProgressTimeoutMs: 12,
+      minProgressBytes: 32,
+      maxDurationMs: 100,
+    }),
+    (error: unknown) => (error as { code?: string }).code === 'PROVIDER_STALLED_BODY',
+  );
+});

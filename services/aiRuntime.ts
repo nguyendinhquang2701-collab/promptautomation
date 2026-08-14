@@ -139,10 +139,23 @@ export const classifyAIError = (error: unknown): AIErrorClassification => {
     error && typeof error === 'object' && typeof (error as { name?: unknown }).name === 'string'
       ? (error as { name: string }).name
       : '';
+  const code =
+    error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : '';
   if (name === 'AbortError') {
     return {
       kind: 'aborted',
       retryable: false,
+      keyAction: 'keep',
+      providerFallbackAllowed: false,
+    };
+  }
+
+  if (code === 'PROVIDER_STALLED_BODY' || code === 'BODY_IDLE_TIMEOUT') {
+    return {
+      kind: 'timeout',
+      retryable: true,
       keyAction: 'keep',
       providerFallbackAllowed: false,
     };

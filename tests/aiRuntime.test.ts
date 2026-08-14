@@ -64,6 +64,13 @@ test('numeric provider code is recognized even when status is symbolic', () => {
   assert.equal(classification.retryable, true);
 });
 
+test('a stalled provider body is retried once without rotating the key', () => {
+  const classification = classifyAIError({ code: 'PROVIDER_STALLED_BODY', message: 'only 3 bytes received' });
+  assert.equal(classification.kind, 'timeout');
+  assert.equal(classification.retryable, true);
+  assert.equal(classification.keyAction, 'keep');
+});
+
 test('attempt timeout is distinct from user cancellation', async () => {
   await assert.rejects(
     runWithRetry(

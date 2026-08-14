@@ -128,8 +128,12 @@ loadAIProviders();
 const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 10, REQUEST_GAP_MS: 350 };
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
-const FAST_REQUEST_TIMEOUT_MS = 180_000;
+// Fast prioritizes a quick, bounded failure over a request that can hold a
+// sequential workflow hostage for several minutes.
+const FAST_REQUEST_TIMEOUT_MS = 120_000;
 const RESPONSE_BODY_IDLE_TIMEOUT_MS = 45_000;
+const FAST_LOW_PROGRESS_TIMEOUT_MS = 90_000;
+const FAST_MIN_PROGRESS_BYTES = 32;
 const DEFAULT_WORKFLOW_TIMEOUT_MS = {
   context: 180_000,
   analyze: 300_000,
@@ -382,6 +386,21 @@ const validateProviderEndpoint = (providerConfig: ProviderConfig): void => {
   if (endpointError) throw new Error(`[LỖI CẤU HÌNH] ${providerConfig.name}: ${endpointError}`);
 };
 
+export const getOpenAIChatCompletionsUrl = (providerConfig: ProviderConfig): string =>
+  `${(providerConfig.baseUrl || '').trim().replace(/\/+$/, '')}/chat/completions`;
+
+const isCustomProvider = (providerConfig: ProviderConfig): boolean =>
+  !Object.prototype.hasOwnProperty.call(DEFAULT_PROVIDERS, providerConfig.id);
+
+const shouldTryLowReasoning = (providerConfig: ProviderConfig, fastCompatible: boolean): boolean =>
+  fastCompatible
+  && isCustomProvider(providerConfig)
+  && /claude|reasoning|thinking|(?:^|[-_/])o[13](?:$|[-_/])/i.test(providerConfig.model);
+
+export const shouldFallbackWithoutReasoning = (status: number, body: string): boolean =>
+  (status === 400 || status === 422)
+  && /reasoning(?:_effort)?|unknown (?:parameter|field)|unsupported (?:parameter|field)|extra fields?/i.test(body);
+
 const readProviderKeys = (providerConfig: ProviderConfig): string[] => {
   try {
     const parsed = JSON.parse(localStorage.getItem(`app1_${providerConfig.keyPrefix}_api_keys`) || '[]');
@@ -503,52 +522,147 @@ const buildOpenAIMessages = (contents: any, systemInstruction: string | undefine
 };
 
 class AIResponseBodyError extends Error {
-  readonly code: 'BODY_IDLE_TIMEOUT' | 'PROVIDER_RESPONSE_ERROR' | 'REASONING_WITHOUT_CONTENT';
+  readonly code: 'BODY_IDLE_TIMEOUT' | 'PROVIDER_STALLED_BODY' | 'PROVIDER_RESPONSE_ERROR' | 'REASONING_WITHOUT_CONTENT';
 
-  constructor(code: 'BODY_IDLE_TIMEOUT' | 'PROVIDER_RESPONSE_ERROR' | 'REASONING_WITHOUT_CONTENT', message: string) {
+  constructor(code: 'BODY_IDLE_TIMEOUT' | 'PROVIDER_STALLED_BODY' | 'PROVIDER_RESPONSE_ERROR' | 'REASONING_WITHOUT_CONTENT', message: string) {
     super(message);
     this.name = 'AIResponseBodyError';
     this.code = code;
   }
 }
 
+export interface ResponseBodyReadOptions {
+  idleTimeoutMs?: number;
+  /** Abort a chunked body that keeps sending tiny heartbeats but no useful response. */
+  lowProgressTimeoutMs?: number;
+  minProgressBytes?: number;
+  /** Upper bound for the entire body read, independent of heartbeats. */
+  maxDurationMs?: number;
+}
+
+const normalizeResponseBodyReadOptions = (
+  options: number | ResponseBodyReadOptions | undefined,
+): Required<ResponseBodyReadOptions> => {
+  if (typeof options === 'number') {
+    return {
+      idleTimeoutMs: options,
+      lowProgressTimeoutMs: Number.POSITIVE_INFINITY,
+      minProgressBytes: FAST_MIN_PROGRESS_BYTES,
+      maxDurationMs: Number.POSITIVE_INFINITY,
+    };
+  }
+  return {
+    idleTimeoutMs: options?.idleTimeoutMs ?? RESPONSE_BODY_IDLE_TIMEOUT_MS,
+    lowProgressTimeoutMs: options?.lowProgressTimeoutMs ?? Number.POSITIVE_INFINITY,
+    minProgressBytes: options?.minProgressBytes ?? FAST_MIN_PROGRESS_BYTES,
+    maxDurationMs: options?.maxDurationMs ?? Number.POSITIVE_INFINITY,
+  };
+};
+
 export const readResponseBodyForDiagnostics = async (
   response: Response,
   onUpdate: (patch: Partial<AIDiagnostic>) => void,
-  idleTimeoutMs = RESPONSE_BODY_IDLE_TIMEOUT_MS,
-): Promise<{ rawBody: string; bytes: number; firstByteMs?: number; bodyMs: number }> => {
+  options?: number | ResponseBodyReadOptions,
+): Promise<{ rawBody: string; bytes: number; chunkCount: number; firstByteMs?: number; bodyMs: number; lastChunkMs?: number }> => {
+  const readOptions = normalizeResponseBodyReadOptions(options);
   const startedAt = Date.now();
   if (!response.body) {
     const rawBody = await response.text();
     const bytes = new TextEncoder().encode(rawBody).byteLength;
-    return { rawBody, bytes, firstByteMs: Date.now() - startedAt, bodyMs: Date.now() - startedAt };
+    const bodyMs = Date.now() - startedAt;
+    return {
+      rawBody,
+      bytes,
+      chunkCount: bytes > 0 ? 1 : 0,
+      firstByteMs: bytes > 0 ? bodyMs : undefined,
+      bodyMs,
+      lastChunkMs: bytes > 0 ? bodyMs : undefined,
+    };
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const chunks: string[] = [];
   let bytes = 0;
+  let chunkCount = 0;
   let firstByteMs: number | undefined;
+  let lastChunkMs: number | undefined;
   let sawDone = false;
+
+  const waitForChunk = () => new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      timers.forEach(clearTimeout);
+      callback();
+    };
+    const addTimeout = (delayMs: number, error: AIResponseBodyError) => {
+      if (!Number.isFinite(delayMs)) return;
+      if (delayMs <= 0) {
+        finish(() => reject(error));
+        return;
+      }
+      timers.push(setTimeout(() => finish(() => reject(error)), delayMs));
+    };
+    const elapsedMs = Date.now() - startedAt;
+    const lowProgressRemainingMs = bytes < readOptions.minProgressBytes
+      ? readOptions.lowProgressTimeoutMs - elapsedMs
+      : Number.POSITIVE_INFINITY;
+    const maxDurationRemainingMs = readOptions.maxDurationMs - elapsedMs;
+
+    addTimeout(
+      readOptions.idleTimeoutMs,
+      bytes > 0 && bytes < readOptions.minProgressBytes
+        ? new AIResponseBodyError(
+          'PROVIDER_STALLED_BODY',
+          `Server stopped after ${bytes} bytes before completing JSON. [PROVIDER_STALLED_BODY]`,
+        )
+        : new AIResponseBodyError(
+          'BODY_IDLE_TIMEOUT',
+          `Server stopped sending response data for ${Math.round(readOptions.idleTimeoutMs / 1_000)} seconds. [BODY_IDLE_TIMEOUT]`,
+        ),
+    );
+    addTimeout(
+      lowProgressRemainingMs,
+      new AIResponseBodyError(
+        'PROVIDER_STALLED_BODY',
+        `Server returned only ${bytes} bytes in ${Math.round(readOptions.lowProgressTimeoutMs / 1_000)} seconds and did not complete JSON. [PROVIDER_STALLED_BODY]`,
+      ),
+    );
+    addTimeout(
+      maxDurationRemainingMs,
+      new AIResponseBodyError(
+        'PROVIDER_STALLED_BODY',
+        `Server did not finish the response within ${Math.round(readOptions.maxDurationMs / 1_000)} seconds. [PROVIDER_STALLED_BODY]`,
+      ),
+    );
+    reader.read().then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
+
   try {
     while (true) {
-      const result = await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new AIResponseBodyError(
-          'BODY_IDLE_TIMEOUT',
-          `Máy chủ đã ngừng gửi dữ liệu trong ${Math.round(idleTimeoutMs / 1_000)} giây. [BODY_IDLE_TIMEOUT]`,
-        )), idleTimeoutMs);
-        reader.read().then(
-          (value) => { clearTimeout(timer); resolve(value); },
-          (error) => { clearTimeout(timer); reject(error); },
-        );
-      });
+      const result = await waitForChunk();
       if (result.done) break;
-      if (!firstByteMs) firstByteMs = Date.now() - startedAt;
+      if (firstByteMs === undefined) firstByteMs = Date.now() - startedAt;
       bytes += result.value.byteLength;
+      chunkCount++;
+      lastChunkMs = Date.now() - startedAt;
       const chunk = decoder.decode(result.value, { stream: true });
       sawDone ||= /(?:^|\n)\s*data:\s*\[DONE\]\s*(?:\n|$)/.test(`${chunks.join('')}${chunk}`);
       chunks.push(chunk);
-      onUpdate({ responseBytes: bytes, firstByteMs, bodyMs: Date.now() - startedAt });
+      onUpdate({
+        responseBytes: bytes,
+        chunkCount,
+        firstByteMs,
+        bodyMs: Date.now() - startedAt,
+        lastChunkMs,
+        responsePreview: sanitizeResponsePreview(chunks.join(''), 200),
+      });
       if (sawDone) {
         await reader.cancel();
         break;
@@ -560,8 +674,16 @@ export const readResponseBodyForDiagnostics = async (
   } finally {
     reader.releaseLock();
   }
+
   chunks.push(decoder.decode());
-  return { rawBody: chunks.join(''), bytes, firstByteMs, bodyMs: Date.now() - startedAt };
+  return {
+    rawBody: chunks.join(''),
+    bytes,
+    chunkCount,
+    firstByteMs,
+    bodyMs: Date.now() - startedAt,
+    lastChunkMs,
+  };
 };
 
 const inspectOpenAIResponse = (rawBody: string) => {
@@ -586,6 +708,35 @@ const inspectOpenAIResponse = (rawBody: string) => {
   }
 };
 
+export const createOpenAIRequestPayload = (
+  contents: any,
+  systemInstruction: string | undefined,
+  schema: any,
+  providerConfig: ProviderConfig,
+  temperature: number,
+  fastCompatible: boolean,
+  includeLowReasoning: boolean,
+) => ({
+  model: providerConfig.model,
+  messages: buildOpenAIMessages(contents, systemInstruction, schema),
+  temperature,
+  ...(fastCompatible
+    ? {
+      // Some compatibility gateways stream by default unless this is explicit.
+      stream: false,
+      ...(includeLowReasoning ? { reasoning_effort: 'low' } : {}),
+    }
+    : {
+      max_tokens: 8192,
+      stream: false,
+      ...(isDeepSeekHost(providerConfig) ? { thinking: { type: 'disabled' } } : {}),
+      ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
+    }),
+});
+
+const isDeepSeekHost = (providerConfig: ProviderConfig): boolean =>
+  /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
+
 const executeOpenAIAttempt = async <T>(
   contents: any,
   systemInstruction: string | undefined,
@@ -597,27 +748,49 @@ const executeOpenAIAttempt = async <T>(
   fastCompatible = false,
   onDiagnostic?: (phase: AIDiagnosticPhase, patch?: Partial<AIDiagnostic>) => void,
 ): Promise<T> => {
-  const cleanBaseUrl = (providerConfig.baseUrl || '').replace(/\/+$/, '');
-  const targetUrl = `${cleanBaseUrl}/chat/completions`;
-  const isDeepSeekHost = /(^|\/\/)api\.deepseek\.com(\/|$)/i.test(providerConfig.baseUrl || '');
+  const targetUrl = getOpenAIChatCompletionsUrl(providerConfig);
   onDiagnostic?.('waiting_headers');
-  const response = await fetch(targetUrl, {
+  const sendRequest = (includeLowReasoning: boolean) => fetch(targetUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: providerConfig.model,
-      messages: buildOpenAIMessages(contents, systemInstruction, schema),
+    body: JSON.stringify(createOpenAIRequestPayload(
+      contents,
+      systemInstruction,
+      schema,
+      providerConfig,
       temperature,
-      ...(fastCompatible ? {} : {
-        max_tokens: 8192,
-        stream: false,
-        ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {}),
-        ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
-      }),
-    }),
+      fastCompatible,
+      includeLowReasoning,
+    )),
     signal,
   });
-  onDiagnostic?.('waiting_headers', { status: response.status, contentType: response.headers.get('content-type') || undefined });
+  const shouldUseLowReasoning = shouldTryLowReasoning(providerConfig, fastCompatible);
+  let usedCompatibilityFallback = false;
+  let response = await sendRequest(shouldUseLowReasoning);
+  if (!response.ok && shouldUseLowReasoning) {
+    const rejectedBody = await response.text();
+    if (shouldFallbackWithoutReasoning(response.status, rejectedBody)) {
+      usedCompatibilityFallback = true;
+      onDiagnostic?.('connecting', { compatibilityFallback: true });
+      response = await sendRequest(false);
+    } else {
+      let details = rejectedBody.slice(0, 4000);
+      try {
+        const parsed = JSON.parse(rejectedBody);
+        details = parsed?.error?.message || JSON.stringify(parsed).slice(0, 4000);
+      } catch { /* keep bounded plain-text body */ }
+      throw new AIHttpError(response.status, `Server rejected request (HTTP ${response.status}): ${details}`, {
+        details,
+        providerId: providerConfig.id,
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+      });
+    }
+  }
+  onDiagnostic?.('waiting_headers', {
+    status: response.status,
+    contentType: response.headers.get('content-type') || undefined,
+    compatibilityFallback: usedCompatibilityFallback || undefined,
+  });
 
   if (!response.ok) {
     const textBody = await response.text();
@@ -633,14 +806,31 @@ const executeOpenAIAttempt = async <T>(
     });
   }
 
-  onDiagnostic?.('reading_body', { status: response.status, contentType: response.headers.get('content-type') || undefined });
-  const body = await readResponseBodyForDiagnostics(response, (patch) => onDiagnostic?.('reading_body', patch));
+  onDiagnostic?.('reading_body', {
+    status: response.status,
+    contentType: response.headers.get('content-type') || undefined,
+    compatibilityFallback: usedCompatibilityFallback || undefined,
+  });
+  const body = await readResponseBodyForDiagnostics(
+    response,
+    (patch) => onDiagnostic?.('reading_body', patch),
+    fastCompatible
+      ? {
+        idleTimeoutMs: RESPONSE_BODY_IDLE_TIMEOUT_MS,
+        lowProgressTimeoutMs: FAST_LOW_PROGRESS_TIMEOUT_MS,
+        minProgressBytes: FAST_MIN_PROGRESS_BYTES,
+        maxDurationMs: FAST_REQUEST_TIMEOUT_MS,
+      }
+      : undefined,
+  );
   const rawBody = body.rawBody;
   const details = inspectOpenAIResponse(rawBody);
   onDiagnostic?.('parsing', {
     responseBytes: body.bytes,
+    chunkCount: body.chunkCount,
     firstByteMs: body.firstByteMs,
     bodyMs: body.bodyMs,
+    lastChunkMs: body.lastChunkMs,
     finishReason: details.finishReason,
     reasoningTokens: details.reasoningTokens,
     outputTokens: details.outputTokens,
@@ -692,7 +882,7 @@ const callAISafe = async <T>(
     providerName: providerConfig.name,
     model: providerConfig.model,
     endpoint: providerConfig.type === 'openai-compatible'
-      ? `${new URL(providerConfig.baseUrl || '').origin}/chat/completions`
+      ? getOpenAIChatCompletionsUrl(providerConfig)
       : 'Google Gemini API',
   };
   diagnostic = emitDiagnostic(options, diagnostic, 'queued');
