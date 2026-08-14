@@ -8,6 +8,7 @@ import {
   AbortableFIFOLimiter,
   classifyAIError,
   normalizeMaxAttempts,
+  runWithWorkerPool,
   runWithRetry,
 } from '../services/aiRuntime';
 
@@ -125,4 +126,31 @@ test('FIFO limiter releases capacity and removes cancelled queued work', async (
   assert.equal(limiter.activeCount, 1);
   releaseThird();
   assert.equal(limiter.activeCount, 0);
+});
+
+test('worker pool never exceeds its configured concurrency', async () => {
+  let active = 0;
+  let maxActive = 0;
+  await runWithWorkerPool([1, 2, 3, 4, 5], 2, async () => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    active -= 1;
+  });
+  assert.equal(maxActive, 2);
+});
+
+test('worker pool keeps only one worker after a safety downgrade', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const completed: number[] = [];
+  await runWithWorkerPool([1, 2, 3], 2, async (item) => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    completed.push(item);
+    await Promise.resolve();
+    active -= 1;
+  }, { shouldReduceToSingleWorker: () => true });
+  assert.equal(maxActive, 1);
+  assert.deepEqual(completed, [1, 2, 3]);
 });
