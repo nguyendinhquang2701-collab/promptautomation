@@ -357,7 +357,7 @@ export const sleepAbortable = (ms: number, signal?: AbortSignal): Promise<void> 
 
 export interface RetryAttemptContext {
   attempt: number;
-  maxAttempts: 1 | 2;
+  maxAttempts: 1 | 2 | 3;
   signal: AbortSignal;
   deadlineAt?: number;
 }
@@ -366,7 +366,7 @@ export interface RetryOptions {
   signal?: AbortSignal;
   deadlineAt?: number;
   attemptTimeoutMs?: number;
-  /** Values above two are intentionally clamped to two. */
+  /** Values above three are intentionally clamped to three. */
   maxAttempts?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
@@ -385,10 +385,10 @@ export interface RetryOptions {
   random?: () => number;
 }
 
-export const normalizeMaxAttempts = (value: number | undefined): 1 | 2 =>
-  value !== undefined && value <= 1 ? 1 : DEFAULT_MAX_ATTEMPTS;
+export const normalizeMaxAttempts = (value: number | undefined): 1 | 2 | 3 =>
+  value !== undefined && value <= 1 ? 1 : value !== undefined && value >= 3 ? 3 : DEFAULT_MAX_ATTEMPTS;
 
-/** A deadline-aware retry loop with a hard ceiling of two attempts. */
+/** A deadline-aware retry loop with a hard ceiling of three attempts. */
 export const runWithRetry = async <T>(
   operation: (context: RetryAttemptContext) => Promise<T>,
   options: RetryOptions = {},
@@ -564,7 +564,7 @@ export class AbortableFIFOLimiter {
   private active = 0;
   private readonly queue: Waiter[] = [];
 
-  constructor(readonly capacity: number) {
+  constructor(private capacity: number) {
     if (!Number.isInteger(capacity) || capacity < 1) {
       throw new RangeError('Limiter capacity must be a positive integer.');
     }
@@ -572,6 +572,19 @@ export class AbortableFIFOLimiter {
 
   get activeCount(): number {
     return this.active;
+  }
+
+  get currentCapacity(): number {
+    return this.capacity;
+  }
+
+  /** Changes admission capacity without interrupting requests already in flight. */
+  setCapacity(capacity: number): void {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new RangeError('Limiter capacity must be a positive integer.');
+    }
+    this.capacity = capacity;
+    this.drain();
   }
 
   get pendingCount(): number {

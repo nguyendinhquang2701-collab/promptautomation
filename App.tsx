@@ -7,7 +7,7 @@ import { AppState, ScriptProject, ColorStyle, CharacterIdentity, SpeedMode } fro
 import { analyzeSingleSegmentToScenes, generatePromptsForSingleSegment, extractContextAndCharacters, analyzeImageStyle, AI_PROVIDERS, repairFailedScenes, PromptOptions, AIOperationOptions } from './services/geminiService';
 import { createDefaultProject, hydrateProjectsWithReport, serializeProjects } from './state/projectPersistence';
 import { splitRawScriptIntoSegments } from './state/scriptSegmentation';
-import { runWithWorkerPool } from './services/aiRuntime';
+import { AbortableFIFOLimiter, runWithWorkerPool } from './services/aiRuntime';
 
 type OperationKind = 'context' | 'style' | 'analyze' | 'prompt' | 'repair';
 
@@ -20,6 +20,7 @@ interface ActiveOperation {
   speedMode: SpeedMode;
   keySlot?: number;
   ultraDowngraded: boolean;
+  requestLimiter: AbortableFIFOLimiter;
   effectiveConcurrency: number;
   activeRequests: number;
   completedProjects: number;
@@ -62,7 +63,7 @@ const MAX_OPERATION_DEADLINE_MS = 60 * 60_000;
 const estimateWorkflowDeadline = (kind: 'analyze' | 'prompt', targets: ScriptProject[]): number => {
   const estimatedBatches = kind === 'analyze'
     ? targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.content.length / 1_200)), 0)
-    : targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.scenes.length / 8) + 1), 0);
+    : targets.reduce((total, project) => total + Math.max(1, Math.ceil(project.scenes.length / 10) + 1), 0);
   return Math.min(
     MAX_OPERATION_DEADLINE_MS,
     Math.max(OPERATION_DEADLINES[kind], 120_000 + estimatedBatches * 120_000),
@@ -102,7 +103,18 @@ const readStoredJSON = <T,>(key: string, fallback: T): T => {
   try { return JSON.parse(raw) as T; } catch { return fallback; }
 };
 
-const readSpeedMode = (): SpeedMode => safeGetItem('app1_speed_mode') === 'ultra' ? 'ultra' : 'fast';
+const readSpeedMode = (): SpeedMode => {
+  const mode = safeGetItem('app1_speed_mode');
+  return mode === 'ultra-max' || mode === 'ultra' ? mode : 'fast';
+};
+
+const initialConcurrency = (mode: SpeedMode, kind: OperationKind): number => {
+  if (kind !== 'analyze' && kind !== 'prompt') return 1;
+  if (mode === 'ultra-max') return 4;
+  return mode === 'ultra' ? 2 : 1;
+};
+
+const workerConcurrency = (mode: SpeedMode): number => mode === 'ultra-max' ? 4 : mode === 'ultra' ? 2 : 1;
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(() => (safeGetItem('app1_appState') as AppState) || AppState.INPUT);
@@ -247,9 +259,10 @@ const App: React.FC = () => {
       providerId,
       providerName: provider?.name || 'AI',
       speedMode,
-      keySlot: speedMode === 'ultra' && availableKeys.length > 0 ? 0 : undefined,
+      keySlot: speedMode !== 'fast' && availableKeys.length > 0 ? 0 : undefined,
       ultraDowngraded: false,
-      effectiveConcurrency: speedMode === 'ultra' && (kind === 'analyze' || kind === 'prompt') ? 2 : 1,
+      requestLimiter: new AbortableFIFOLimiter(initialConcurrency(speedMode, kind)),
+      effectiveConcurrency: initialConcurrency(speedMode, kind),
       activeRequests: 0,
       completedProjects: 0,
       totalProjects: 0,
@@ -301,15 +314,18 @@ const App: React.FC = () => {
     providerId: operation.providerId,
     speedMode: operation.speedMode,
     keySlot: operation.keySlot,
-    attemptTimeoutMs: 60_000,
-    maxAttempts: 2,
+    requestLimiter: operation.requestLimiter,
+    attemptTimeoutMs: operation.speedMode === 'fast' ? undefined : 60_000,
+    maxAttempts: operation.speedMode === 'fast' ? 3 : 2,
     onProgress: (message) => updateOperationProgress(operation, prefix ? `${prefix} • ${message}` : message),
     onConcurrencyDowngrade: (reason) => {
-      if (operation.speedMode !== 'ultra' || operation.ultraDowngraded) return;
+      if (operation.speedMode === 'fast' || operation.effectiveConcurrency <= 1) return;
       operation.ultraDowngraded = true;
-      operation.effectiveConcurrency = 1;
-      setOperationView(prev => prev?.id === operation.id ? { ...prev, effectiveConcurrency: 1 } : prev);
-      updateOperationProgress(operation, `Ultra tạm chuyển về Fast vì API báo ${reason}.`);
+      operation.effectiveConcurrency = operation.effectiveConcurrency > 2 ? 2 : 1;
+      operation.requestLimiter.setCapacity(operation.effectiveConcurrency);
+      setOperationView(prev => prev?.id === operation.id ? { ...prev, effectiveConcurrency: operation.effectiveConcurrency } : prev);
+      const nextMode = operation.effectiveConcurrency === 1 ? 'Fast' : 'Ultra';
+      updateOperationProgress(operation, `${operation.speedMode === 'ultra-max' ? 'Ultra Max' : 'Ultra'} tạm chuyển về ${nextMode} vì API báo ${reason}.`);
     },
     onRequestActivity: (delta) => {
       operation.activeRequests = Math.max(0, operation.activeRequests + delta);
@@ -476,13 +492,13 @@ const App: React.FC = () => {
     try {
       await runWithWorkerPool(
         targets,
-        operation.speedMode === 'ultra' ? 2 : 1,
+        workerConcurrency(operation.speedMode),
         async (project, index) => {
           try { await analyzeProject(project, index); } catch { /* retain partial result and continue */ }
         },
         {
           shouldStop: () => !isCurrentOperation(operation.id),
-          shouldReduceToSingleWorker: () => operation.ultraDowngraded,
+          shouldReduceToSingleWorker: () => operation.effectiveConcurrency === 1,
         },
       );
       if (isCurrentOperation(operation.id)) {
@@ -637,13 +653,13 @@ const App: React.FC = () => {
     try {
       await runWithWorkerPool(
         targets,
-        operation.speedMode === 'ultra' ? 2 : 1,
+        workerConcurrency(operation.speedMode),
         async (project, index) => {
           try { await generateProject(project, index); } catch { /* completed projects remain available */ }
         },
         {
           shouldStop: () => !isCurrentOperation(operation.id),
-          shouldReduceToSingleWorker: () => operation.ultraDowngraded,
+          shouldReduceToSingleWorker: () => operation.effectiveConcurrency === 1,
         },
       );
     } catch (error: unknown) {
@@ -672,6 +688,9 @@ const App: React.FC = () => {
     if (window.confirm("Làm mới dự án? Màn hình này sẽ được xóa sạch để làm kịch bản mới.")) {
         const provider = localStorage.getItem('app1_ai_provider');
         const customProviders = localStorage.getItem('app1_custom_providers');
+        // Chế độ tốc độ là cài đặt trình duyệt, độc lập với dữ liệu dự án.
+        // Xóa trắng chỉ xóa kịch bản hiện tại, không được làm người dùng mất lựa chọn này.
+        const speedMode = localStorage.getItem('app1_speed_mode');
 
         // 👉 GIỮ LẠI MÃ KÍCH HOẠT khi "Xóa Trắng" — đã nhập mã rồi thì không bao giờ
         // bắt nhập lại (trừ khi chuyển máy). Xoá mã sẽ khiến app thoát ra đòi mã.
@@ -694,6 +713,7 @@ const App: React.FC = () => {
 
         if(provider) localStorage.setItem('app1_ai_provider', provider);
         if(customProviders) localStorage.setItem('app1_custom_providers', customProviders);
+        if(speedMode) localStorage.setItem('app1_speed_mode', speedMode);
         if(promptElements) localStorage.setItem('app1_prompt_elements', promptElements);
         if(maxPromptChars) localStorage.setItem('app1_prompt_max_chars', maxPromptChars);
 
@@ -731,10 +751,12 @@ const App: React.FC = () => {
               <p className="mt-1 break-words text-sm text-indigo-300">{operationView.progress}</p>
               <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-medium text-slate-400">
                 <span>{operationView.providerName}</span>
-                <span>{operationView.speedMode === 'ultra'
-                  ? `Ultra${operationView.effectiveConcurrency === 1 ? ' → Fast' : ''} · ${operationView.kind === 'analyze' || operationView.kind === 'prompt' ? `${operationView.effectiveConcurrency} worker` : 'bước này chạy đơn'}`
-                  : 'Fast · 1 worker'}</span>
-                <span>Đang chạy {operationView.activeRequests}/{operationView.effectiveConcurrency} request AI</span>
+                <span>{operationView.speedMode === 'ultra-max'
+                  ? `Ultra Max${operationView.effectiveConcurrency === 4 ? '' : operationView.effectiveConcurrency === 2 ? ' → Ultra' : ' → Fast'} · ${operationView.kind === 'analyze' || operationView.kind === 'prompt' ? `${operationView.effectiveConcurrency} luồng · 1 API key` : 'bước này chạy đơn'}`
+                  : operationView.speedMode === 'ultra'
+                    ? `Ultra${operationView.effectiveConcurrency === 1 ? ' → Fast' : ''} · ${operationView.kind === 'analyze' || operationView.kind === 'prompt' ? `${operationView.effectiveConcurrency} luồng · 1 API key` : 'bước này chạy đơn'}`
+                    : 'Fast · 1 luồng'}</span>
+                <span>Request AI đang chạy {operationView.activeRequests}/{operationView.effectiveConcurrency}</span>
                 {operationView.totalProjects > 0 && <span>Hoàn thành {operationView.completedProjects}/{operationView.totalProjects} phân đoạn</span>}
                 <span>Đã chạy {formatDuration((operationClock - operationView.startedAt) / 1000)}</span>
                 <span>Giới hạn còn lại {formatDuration((operationView.deadlineAt - operationClock) / 1000)}</span>

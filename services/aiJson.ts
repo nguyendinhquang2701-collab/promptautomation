@@ -50,3 +50,36 @@ export const parseAIJsonResponse = <T>(rawResponse: string): T => {
   }
   throw new AIJsonParseError('INVALID_JSON', 'AI trả về JSON không hợp lệ hoặc phản hồi bị cắt. [INVALID_JSON]');
 };
+
+/**
+ * Compatibility parser for slow OpenAI-compatible gateways. It keeps only
+ * complete objects from a truncated top-level array; callers must still
+ * validate every returned item and retry missing IDs.
+ */
+export const parseFastCompatibleAIJsonResponse = <T>(rawResponse: string): T => {
+  try {
+    return parseAIJsonResponse<T>(rawResponse);
+  } catch {
+    const raw = rawResponse.trim();
+    if (!raw) return [] as T;
+    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fence?.[1]?.trim() || raw;
+    const firstArray = candidate.indexOf('[');
+    if (firstArray !== -1) {
+      const arrayCandidate = candidate.slice(firstArray);
+      const lastObject = arrayCandidate.lastIndexOf('}');
+      if (lastObject !== -1) {
+        try { return JSON.parse(`${arrayCandidate.slice(0, lastObject + 1)}]`) as T; } catch { /* try object below */ }
+      }
+    }
+    const firstObject = candidate.indexOf('{');
+    if (firstObject !== -1) {
+      const objectCandidate = candidate.slice(firstObject);
+      const lastObject = objectCandidate.lastIndexOf('}');
+      if (lastObject !== -1) {
+        try { return JSON.parse(objectCandidate.slice(0, lastObject + 1)) as T; } catch { /* stable fallback below */ }
+      }
+    }
+    return [] as T;
+  }
+};

@@ -9,13 +9,14 @@ import {
   normalizeApiKeys,
   parseRetryAfterMs,
   remainingDeadlineMs,
+  runWithWorkerPool,
   runWithRetry,
   selectNextKey,
   splitIntoBatches,
   updateKeyState,
 } from "./aiRuntime";
 import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
-import { AIJsonParseError, parseAIJsonResponse } from "./aiJson";
+import { AIJsonParseError, parseAIJsonResponse, parseFastCompatibleAIJsonResponse } from "./aiJson";
 
 export interface ProviderConfig {
   id: string;
@@ -50,6 +51,8 @@ export interface AIOperationOptions {
   speedMode?: SpeedMode;
   /** Ultra binds a whole operation to one saved key slot. */
   keySlot?: number;
+  /** Shared per-operation gate; keeps a mode's request count exact across all batches. */
+  requestLimiter?: AbortableFIFOLimiter;
   onConcurrencyDowngrade?: (reason: string) => void;
   onRequestActivity?: (delta: 1 | -1) => void;
 }
@@ -117,7 +120,7 @@ loadAIProviders();
 
 // One conservative production pipeline for every provider: a single active
 // request, moderate batches, and a small gap between completed calls.
-const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 8, REQUEST_GAP_MS: 350 };
+const CONFIG = { BATCH_SIZE: 10, PROMPT_BATCH_SIZE: 10, REQUEST_GAP_MS: 350 };
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 60_000;
 const DEFAULT_WORKFLOW_TIMEOUT_MS = {
@@ -193,7 +196,8 @@ const getColorDescription = (style: ColorStyle): string => {
 };
 
 type AILane = 'scene' | 'prompt' | 'planner';
-const AI_LIMITER = new AbortableFIFOLimiter(2);
+// Hard browser-wide ceiling. Each operation also brings its own mode limiter.
+const AI_LIMITER = new AbortableFIFOLimiter(4);
 const PLANNER_LIMITER = new AbortableFIFOLimiter(1);
 let nextRequestAt = 0;
 let nextUltraStartAt = 0;
@@ -239,13 +243,17 @@ const normalizeOperationOptions = (
   providerId: options?.providerId || localStorage.getItem('app1_ai_provider') || (AI_PROVIDERS.gemini ? 'gemini' : Object.keys(AI_PROVIDERS)[0] || 'gemini'),
   deadlineAt: options?.deadlineAt ?? deadlineAfter(workflowTimeoutMs),
   attemptTimeoutMs: options?.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS,
-  maxAttempts: Math.min(2, Math.max(1, options?.maxAttempts ?? 2)),
+  maxAttempts: Math.min(
+    options?.speedMode === 'fast' ? 3 : 2,
+    Math.max(1, options?.maxAttempts ?? (options?.speedMode === 'fast' ? 3 : 2)),
+  ),
 });
 
 const withAuxiliaryPolicy = (options: AIOperationOptions): AIOperationOptions => ({
   ...options,
-  attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? 30_000, 30_000),
-  maxAttempts: 1,
+  ...(options.speedMode === 'fast'
+    ? { maxAttempts: 3 }
+    : { attemptTimeoutMs: Math.min(options.attemptTimeoutMs ?? 30_000, 30_000), maxAttempts: 1 }),
 });
 
 // 👉 Trích khối JSON cân bằng (mảng/object) đầu tiên trong chuỗi, tôn trọng
@@ -468,6 +476,7 @@ const executeOpenAIAttempt = async <T>(
   apiKey: string,
   temperature: number,
   signal: AbortSignal,
+  fastCompatible = false,
 ): Promise<T> => {
   const cleanBaseUrl = (providerConfig.baseUrl || '').replace(/\/+$/, '');
   const targetUrl = `${cleanBaseUrl}/chat/completions`;
@@ -479,10 +488,12 @@ const executeOpenAIAttempt = async <T>(
       model: providerConfig.model,
       messages: buildOpenAIMessages(contents, systemInstruction, schema),
       temperature,
-      max_tokens: 8192,
-      stream: false,
-      ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {}),
-      ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
+      ...(fastCompatible ? {} : {
+        max_tokens: 8192,
+        stream: false,
+        ...(isDeepSeekHost ? { thinking: { type: 'disabled' } } : {}),
+        ...(openAIResponseFormat(providerConfig, schema) ? { response_format: openAIResponseFormat(providerConfig, schema) } : {}),
+      }),
     }),
     signal,
   });
@@ -503,7 +514,7 @@ const executeOpenAIAttempt = async <T>(
 
   const rawBody = await response.text();
   const text = extractOpenAIContent(rawBody);
-  let parsed = parseAIJsonResponse(text);
+  let parsed = fastCompatible ? parseFastCompatibleAIJsonResponse(text) : parseAIJsonResponse(text);
   if (schema && schema.type === Type.ARRAY && !Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
     const arrayValues = Object.values(parsed).find((value) => Array.isArray(value));
     parsed = arrayValues || [];
@@ -543,16 +554,19 @@ const callAISafe = async <T>(
   if (fixedKeySlot === undefined) keyIndexes[providerConfig.id] = (startIndex + 1) % keys.length;
   let keyPool = createKeyPoolState(fixedKeySlot === undefined ? keys : [keys[startIndex]], startIndex);
   const workflowDeadline = options.deadlineAt ?? deadlineAfter(DEFAULT_CALL_TIMEOUT_MS);
-  const attemptTimeoutMs = Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
+  const fastCompatible = options.speedMode === 'fast';
+  const attemptTimeoutMs = fastCompatible
+    ? Math.max(1, remainingDeadlineMs(workflowDeadline))
+    : Math.min(options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS, DEFAULT_CALL_TIMEOUT_MS);
   const limiter = AI_LIMITER;
 
   // Queue time is governed by the workflow deadline, not the per-attempt clock.
   // FIFO admission keeps provider requests bounded and cancellable.
-  return limiter.run(async () => {
-    if (options.speedMode === 'ultra') await waitForUltraStartStagger(options.signal);
+  const runRequest = () => limiter.run(async () => {
+    if (options.speedMode === 'ultra' || options.speedMode === 'ultra-max') await waitForUltraStartStagger(options.signal);
     await waitForRequestPace(options.signal);
     try {
-      const callDeadline = Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
+      const callDeadline = fastCompatible ? workflowDeadline : Math.min(workflowDeadline, deadlineAfter(DEFAULT_CALL_TIMEOUT_MS));
       return await runWithRetry<T>(async ({ attempt, signal, maxAttempts }) => {
         const selected = selectNextKey(keyPool);
         keyPool = selected.state;
@@ -565,11 +579,15 @@ const callAISafe = async <T>(
           const transportTimeout = Math.max(1, Math.min(attemptTimeoutMs, remainingDeadlineMs(callDeadline)));
           return providerConfig.type === 'gemini'
             ? executeGeminiAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, transportTimeout)
-            : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal);
+            : executeOpenAIAttempt<T>(contents, systemInstruction, schema, providerConfig, selection.key, temperature, signal, fastCompatible);
         } catch (error) {
           const classification = classifyAIError(error);
-          if (options.speedMode === 'ultra' && (classification.kind === 'rate-limit' || classification.kind === 'quota')) {
+          const isParallelMode = options.speedMode === 'ultra' || options.speedMode === 'ultra-max';
+          const isProviderBackpressure = classification.kind === 'rate-limit' || classification.kind === 'quota';
+          if (isParallelMode && (isProviderBackpressure || classification.kind === 'server' || classification.kind === 'timeout')) {
             options.onConcurrencyDowngrade?.(classification.kind);
+          }
+          if (isProviderBackpressure) {
             nextRequestAt = Math.max(nextRequestAt, Date.now() + Math.max(5_000, classification.retryAfterMs || 0));
           }
           keyPool = updateKeyState(keyPool, selection.index, classification.keyAction, {
@@ -599,6 +617,10 @@ const callAISafe = async <T>(
       nextRequestAt = Math.max(nextRequestAt, Date.now() + CONFIG.REQUEST_GAP_MS);
     }
   }, { signal: options.signal, deadlineAt: workflowDeadline });
+
+  return options.requestLimiter
+    ? options.requestLimiter.run(runRequest, { signal: options.signal, deadlineAt: workflowDeadline })
+    : runRequest();
 };
 
 // ============================================================================
@@ -1626,7 +1648,6 @@ export const analyzeSingleSegmentToScenes = async (
   const operation = normalizeOperationOptions(aiOptions, DEFAULT_WORKFLOW_TIMEOUT_MS.analyze);
   const exactSourceTexts = splitScriptByCode(segment.content, options?.splitLogic);
   let allFinalScenes: Scene[] = [];
-  let globalSceneId = 1;
   const batches: string[][] = [];
   for (let i = 0; i < exactSourceTexts.length; i += CONFIG.BATCH_SIZE) batches.push(exactSourceTexts.slice(i, i + CONFIG.BATCH_SIZE));
 
@@ -1644,8 +1665,9 @@ export const analyzeSingleSegmentToScenes = async (
     
     let pendingIndices = batchTexts.map((_, i) => i);
     let loopCount = 0;
+    const maxBatchLoops = operation.speedMode === 'fast' ? 3 : 2;
 
-    while (pendingIndices.length > 0 && loopCount < 2) {   // (Sửa hiệu năng) 3→2 vòng
+    while (pendingIndices.length > 0 && loopCount < maxBatchLoops) {
       loopCount++;
       const promptTexts = pendingIndices.map(i => `[ID: ${i + 1}] "${batchTexts[i]}"`).join('\n');
       
@@ -1690,29 +1712,60 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
             // 👉 Chốt chặn hình ảnh cấm (giấy tờ/chữ/bạo lực/đám đông) — dính thì tạo lại,
             // trừ vòng cuối (chấp nhận để không kẹt cả đoạn).
             const bannedHit = findBannedVisual(`${validScenes[idx].visualDescription} ${validScenes[idx].settingTime}`);
-            if (validScenes[idx].visualDescription !== "" && (!bannedHit || loopCount >= 2)) {
+            if (validScenes[idx].visualDescription !== "" && (!bannedHit || loopCount >= maxBatchLoops)) {
                successfulIds.push(idx);
             }
           }
         }
         pendingIndices = pendingIndices.filter(i => !successfulIds.includes(i));
       } 
-      catch (e: any) { throw e; }
+      catch (e: any) {
+        const kind = classifyAIError(e).kind;
+        if (operation.speedMode === 'fast' && loopCount < maxBatchLoops && kind !== 'authentication' && kind !== 'client') continue;
+        throw e;
+      }
     }
     
     return { index, chunkScenes: validScenes };
   };
 
-  for (let index = 0; index < batches.length; index++) {
-    if (operation.signal?.aborted) throw operation.signal.reason;
-    const result = await processBatch(batches[index], index);
-    result.chunkScenes.forEach(scene => {
-      allFinalScenes.push({ ...scene, id: globalSceneId++ });
-    });
-    operation.onPartialScenes?.([...allFinalScenes]);
-    operation.onProgress?.(`Đã hoàn thành mẻ ${index + 1}/${batches.length} (${allFinalScenes.length} cảnh)`);
-  }
-  
+  const shouldSplitSceneBatch = (error: unknown, batch: string[]): boolean => {
+    if (batch.length <= 2) return false;
+    const message = error instanceof Error ? error.message : String(error);
+    return error instanceof AIJsonParseError || /\b(?:413|payload too large|context length|output.*truncat)/i.test(message);
+  };
+  const resolveSceneBatch = async (batch: string[], index: number): Promise<Scene[]> => {
+    try {
+      return (await processBatch(batch, index)).chunkScenes;
+    } catch (error) {
+      if (!shouldSplitSceneBatch(error, batch)) throw error;
+      const midpoint = Math.ceil(batch.length / 2);
+      operation.onProgress?.(`Mẻ cảnh ${index + 1} quá lớn; đang tách thành ${midpoint} + ${batch.length - midpoint} cảnh.`);
+      const [left, right] = await Promise.all([
+        resolveSceneBatch(batch.slice(0, midpoint), index),
+        resolveSceneBatch(batch.slice(midpoint), index),
+      ]);
+      return [...left, ...right];
+    }
+  };
+
+  const completedBatches: Array<Scene[] | undefined> = Array.from({ length: batches.length });
+  const batchConcurrency = operation.speedMode === 'ultra-max' ? 4 : 1;
+  await runWithWorkerPool(
+    batches,
+    batchConcurrency,
+    async (batch, index) => {
+      if (operation.signal?.aborted) throw operation.signal.reason;
+      const chunkScenes = await resolveSceneBatch(batch, index);
+      const firstSceneId = batches.slice(0, index).reduce((count, current) => count + current.length, 0) + 1;
+      completedBatches[index] = chunkScenes.map((scene, sceneIndex) => ({ ...scene, id: firstSceneId + sceneIndex }));
+      allFinalScenes = completedBatches.flatMap((scenes) => scenes || []);
+      operation.onPartialScenes?.([...allFinalScenes]);
+      operation.onProgress?.(`Đã hoàn thành mẻ ${index + 1}/${batches.length} (${allFinalScenes.length}/${exactSourceTexts.length} cảnh)`);
+    },
+    { shouldStop: () => Boolean(operation.signal?.aborted) },
+  );
+
   return allFinalScenes;
 };
 
@@ -1913,11 +1966,12 @@ ${techDetailsStr}
 ${options?.audioMode !== 'keep' ? 'AUDIO: describe visuals only — no dialogue, no on-screen text, no music.' : ''}
 Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese.`;
 
-  const batches = splitIntoBatches(segment.scenes, CONFIG.PROMPT_BATCH_SIZE);
+  const promptBatchSize = operation.speedMode === 'fast' ? 5 : CONFIG.PROMPT_BATCH_SIZE;
+  const batches = splitIntoBatches(segment.scenes, promptBatchSize);
   const shouldSplitPromptBatch = (error: unknown, batch: Scene[]) => {
-    if (batch.length <= 4) return false;
+    if (batch.length <= 2) return false;
     const message = error instanceof Error ? error.message : String(error);
-    return /\[(?:INVALID_JSON|EMPTY_RESPONSE)\]|\b(?:413|payload too large|context length|output.*truncat)/i.test(message);
+    return error instanceof AIJsonParseError || /\b(?:413|payload too large|context length|output.*truncat)/i.test(message);
   };
 
   // 👉 Ghép PROMPT JSON theo THÀNH TỐ người dùng đã tick (popup ⚙️): thành tố 'ai' lấy
@@ -1949,6 +2003,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
     const processBatch = async (batch: Scene[], index: number): Promise<PromptItem[]> => {
       let pendingBatch = batch;
       let batchLoop = 0;
+      const maxBatchLoops = operation.speedMode === 'fast' ? 3 : 2;
       const validItems: PromptItem[] = [];
 
       const charIndex = buildCharacterIndex(characters);
@@ -2039,7 +2094,7 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
       // (Sửa hiệu năng) Trần vòng lặp mẻ 3→2: nếu output trượt lưới thì thử lại nhiều nhất
       // 1 lần nữa rồi chấp nhận/đẩy xuống cứu hộ — cắt nửa số call thừa. Nhánh cứu hộ batch=1
       // phía dưới vẫn vá được cảnh sót nên không mất cảnh nào.
-      while (pendingBatch.length > 0 && batchLoop < 2) {
+      while (pendingBatch.length > 0 && batchLoop < maxBatchLoops) {
         batchLoop++;
         try {
           const payload = pendingBatch.map(makePayload);
@@ -2052,12 +2107,12 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           for (const pi of generated) {
             const scene = pendingBatch.find(s => s.id === pi.sceneId);
             if (!scene) continue;
-            if (!hasAllRequiredFields(pi) && batchLoop < 2) continue;
+            if (!hasAllRequiredFields(pi) && batchLoop < maxBatchLoops) continue;
 
             const assembled = assembleFinalPrompt(pi);
             const required = detectPresentChars(scene);
             const verdict = validateNameAndRichness(assembled, required);
-            if (!verdict.ok && batchLoop < 2) {
+            if (!verdict.ok && batchLoop < maxBatchLoops) {
               continue;
             }
 
@@ -2067,6 +2122,8 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
 
           pendingBatch = pendingBatch.filter(s => !acceptedIds.includes(s.id));
         } catch (e: any) {
+          const kind = classifyAIError(e).kind;
+          if (operation.speedMode === 'fast' && batchLoop < maxBatchLoops && kind !== 'authentication' && kind !== 'client') continue;
           throw new Error(`Mẻ ${index + 1} thất bại: ${e.message || e}`);
         }
       }
@@ -2079,7 +2136,8 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
         const stillPending: Scene[] = [];
         for (const scene of pendingBatch) {
           let rescued = false;
-          for (let attempt = 0; attempt < 1 && !rescued; attempt++) {
+          const maxRescueAttempts = operation.speedMode === 'fast' ? 2 : 1;
+          for (let attempt = 0; attempt < maxRescueAttempts && !rescued; attempt++) {
             try {
               const generated = await callAISafe<any[]>(
                 `Generate structured prompts for:\n${JSON.stringify([makePayload(scene)])}\n`,
@@ -2121,29 +2179,38 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
       return validItems;
     };
 
-    const allResults: PromptItem[] = [];
-    let index = 0;
-    while (index < batches.length) {
-      if (operation.signal?.aborted) throw operation.signal.reason;
-      const batch = batches[index];
+    const resolvePromptBatch = async (batch: Scene[], index: number): Promise<PromptItem[]> => {
       operation.onProgress?.(`Đang tạo mẻ ${index + 1}/${batches.length} (${batch.length} cảnh)...`);
-      let items: PromptItem[];
       try {
-        items = await processBatch(batch, index);
+        return await processBatch(batch, index);
       } catch (error) {
         if (!shouldSplitPromptBatch(error, batch)) throw error;
         const midpoint = Math.ceil(batch.length / 2);
-        batches.splice(index, 1, batch.slice(0, midpoint), batch.slice(midpoint));
         operation.onProgress?.(`Mẻ ${index + 1} quá lớn; đang tách thành ${midpoint} + ${batch.length - midpoint} cảnh.`);
-        continue;
+        const [left, right] = await Promise.all([
+          resolvePromptBatch(batch.slice(0, midpoint), index),
+          resolvePromptBatch(batch.slice(midpoint), index),
+        ]);
+        return [...left, ...right];
       }
-      allResults.push(...items);
-      operation.onPartialPrompts?.([...allResults].sort((a, b) => a.sceneId - b.sceneId));
-      operation.onProgress?.(`Đã hoàn thành mẻ ${index + 1}/${batches.length} (${allResults.length} prompt)`);
-      index += 1;
-    }
+    };
 
-    return allResults.sort((a, b) => a.sceneId - b.sceneId);
+    const completedBatches: Array<PromptItem[] | undefined> = Array.from({ length: batches.length });
+    const batchConcurrency = operation.speedMode === 'ultra-max' ? 4 : 1;
+    await runWithWorkerPool(
+      batches,
+      batchConcurrency,
+      async (batch, index) => {
+        if (operation.signal?.aborted) throw operation.signal.reason;
+        completedBatches[index] = await resolvePromptBatch(batch, index);
+        const allResults = completedBatches.flatMap((items) => items || []).sort((a, b) => a.sceneId - b.sceneId);
+        operation.onPartialPrompts?.(allResults);
+        operation.onProgress?.(`Đã hoàn thành mẻ ${index + 1}/${batches.length} (${allResults.length}/${segment.scenes.length} prompt)`);
+      },
+      { shouldStop: () => Boolean(operation.signal?.aborted) },
+    );
+
+    return completedBatches.flatMap((items) => items || []).sort((a, b) => a.sceneId - b.sceneId);
   };
 
   const defaultProviderId = operation.providerId!;

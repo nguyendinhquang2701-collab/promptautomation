@@ -49,7 +49,8 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
     const savedProvider = safeStorageGet('app1_ai_provider') || 'gemini';
     const activeProvider = AI_PROVIDERS[savedProvider] ? savedProvider : Object.keys(AI_PROVIDERS)[0] || 'gemini';
     setProvider(activeProvider);
-    setSpeedMode(safeStorageGet('app1_speed_mode') === 'ultra' ? 'ultra' : 'fast');
+    const savedSpeedMode = safeStorageGet('app1_speed_mode');
+    setSpeedMode(savedSpeedMode === 'ultra-max' || savedSpeedMode === 'ultra' ? savedSpeedMode : 'fast');
     
     const config = AI_PROVIDERS[activeProvider];
     if (config) {
@@ -284,8 +285,8 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
                 className={`flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2.5 text-xs font-bold text-white shadow-lg transition-colors hover:border-slate-700 hover:bg-slate-800 ${isOperationActive ? 'cursor-not-allowed opacity-60' : ''}`}
                 title="Chọn tốc độ xử lý"
               >
-                <span className={speedMode === 'ultra' ? 'text-fuchsia-400' : 'text-indigo-400'}>⚡</span>
-                <span>{speedMode === 'ultra' ? 'Ultra' : 'Fast'}</span>
+                <span className={speedMode === 'ultra-max' ? 'text-amber-400' : speedMode === 'ultra' ? 'text-fuchsia-400' : 'text-indigo-400'}>⚡</span>
+                <span>{speedMode === 'ultra-max' ? 'Ultra Max' : speedMode === 'ultra' ? 'Ultra' : 'Fast'}</span>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-4 w-4 text-slate-500 transition-transform ${isSpeedDropdownOpen ? 'rotate-180' : ''}`}>
                   <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z" clipRule="evenodd" />
                 </svg>
@@ -294,11 +295,15 @@ const Header: React.FC<HeaderProps> = ({ isOperationActive = false }) => {
                 <div role="menu" className="absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-xl border border-slate-700 bg-slate-800 p-1 shadow-2xl">
                   <button type="button" role="menuitem" onClick={() => handleSpeedModeChange('fast')} className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${speedMode === 'fast' ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-300 hover:bg-slate-700'}`}>
                     <span className="mt-0.5 text-indigo-400">{speedMode === 'fast' ? '✓' : '○'}</span>
-                    <span><span className="block text-xs font-bold">Fast</span><span className="block text-[10px] text-slate-400">1 luồng · ổn định nhất</span></span>
+                    <span><span className="block text-xs font-bold">Fast</span><span className="block text-[10px] text-slate-400">1 luồng · tương thích API cao</span></span>
                   </button>
                   <button type="button" role="menuitem" onClick={() => handleSpeedModeChange('ultra')} className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${speedMode === 'ultra' ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'text-slate-300 hover:bg-slate-700'}`}>
                     <span className="mt-0.5 text-fuchsia-400">{speedMode === 'ultra' ? '✓' : '○'}</span>
                     <span><span className="block text-xs font-bold">Ultra</span><span className="block text-[10px] text-slate-400">Tối đa 2 luồng · cùng một API key</span></span>
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => handleSpeedModeChange('ultra-max')} className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${speedMode === 'ultra-max' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-300 hover:bg-slate-700'}`}>
+                    <span className="mt-0.5 text-amber-400">{speedMode === 'ultra-max' ? '✓' : '○'}</span>
+                    <span><span className="block text-xs font-bold">Ultra Max</span><span className="block text-[10px] text-slate-400">Tối đa 4 luồng · dành cho API khỏe</span></span>
                   </button>
                 </div>
               )}
