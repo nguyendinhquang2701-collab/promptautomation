@@ -87,3 +87,52 @@ export const parseFastCompatibleAIJsonResponse = <T>(rawResponse: string): T => 
     throw strictError || new AIJsonParseError('INVALID_JSON', 'AI tráº£ vá» JSON khÃ´ng há»£p lá»‡. [INVALID_JSON]');
   }
 };
+
+/** Wrapper keys a JSON-mode gateway uses when it ignores the requested "items". */
+const ITEM_LIST_ALIASES = ['data', 'results', 'result', 'list', 'output', 'outputs', 'response', 'prompts', 'scenes'];
+/** A batch item always carries the id the request asked it to echo back. */
+const ITEM_ID_KEYS = ['sceneId', 'scene_id', 'id'];
+
+export type ItemsEnvelopeSource = 'array' | 'items' | 'alias' | 'single-object';
+
+export interface ItemsEnvelope {
+  items: unknown[];
+  /** 'array' and 'items' honour the contract; the rest were repaired here. */
+  source: ItemsEnvelopeSource;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const asSingleItem = (value: unknown): unknown[] | null =>
+  isRecord(value) && ITEM_ID_KEYS.some(key => value[key] !== undefined) ? [value] : null;
+
+/**
+ * Recovers the item list from a JSON-mode reply.
+ *
+ * A model answering a one-scene batch very often drops the {"items": [...]}
+ * envelope and returns the bare object: the payload is complete and valid,
+ * only its wrapper is wrong. Rebuilding the list here keeps that work instead
+ * of paying for a full regeneration round that would likely repeat the same
+ * habit. Returns null when nothing item-shaped is present, so the caller still
+ * fails loudly rather than inventing data.
+ */
+export const unwrapItemsEnvelope = (parsed: unknown): ItemsEnvelope | null => {
+  if (Array.isArray(parsed)) return { items: parsed, source: 'array' };
+  if (!isRecord(parsed)) return null;
+
+  if (Array.isArray(parsed.items)) return { items: parsed.items, source: 'items' };
+  const wrappedSingle = asSingleItem(parsed.items);
+  if (wrappedSingle) return { items: wrappedSingle, source: 'items' };
+
+  for (const key of ITEM_LIST_ALIASES) {
+    if (Array.isArray(parsed[key])) return { items: parsed[key] as unknown[], source: 'alias' };
+  }
+  const keys = Object.keys(parsed);
+  // A lone wrapper key holding an array is still an envelope, whatever its name.
+  if (keys.length === 1 && Array.isArray(parsed[keys[0]])) return { items: parsed[keys[0]] as unknown[], source: 'alias' };
+
+  const bareItem = asSingleItem(parsed);
+  if (bareItem) return { items: bareItem, source: 'single-object' };
+  return null;
+};

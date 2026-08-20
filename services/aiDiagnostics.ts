@@ -30,6 +30,8 @@ export interface AIDiagnostic {
   lastChunkMs?: number;
   /** True when an optional compatibility field was rejected and removed. */
   compatibilityFallback?: boolean;
+  /** Set when the reply carried usable items under a wrong JSON envelope. */
+  envelopeRepair?: 'alias' | 'single-object';
   thinkingProfile?: string;
   thinkingStatus?: string;
   finishReason?: string;

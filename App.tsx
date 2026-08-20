@@ -855,6 +855,7 @@ const App: React.FC = () => {
       bodyMs: diagnostic.bodyMs,
       lastChunkMs: diagnostic.lastChunkMs,
       compatibilityFallback: diagnostic.compatibilityFallback,
+      envelopeRepair: diagnostic.envelopeRepair,
       thinkingProfile: diagnostic.thinkingProfile,
       thinkingStatus: diagnostic.thinkingStatus,
       finishReason: diagnostic.finishReason,
@@ -922,6 +923,13 @@ const App: React.FC = () => {
               )}
               {operationView.diagnostic.compatibilityFallback && (
                 <p className="mt-1 text-amber-300">Đã thử lại bằng chế độ tương thích của API.</p>
+              )}
+              {operationView.diagnostic.envelopeRepair && (
+                <p className="mt-1 text-amber-300">
+                  {operationView.diagnostic.envelopeRepair === 'single-object'
+                    ? 'AI trả 1 object rời thay vì danh sách — đã tự vá vỏ JSON, giữ nguyên dữ liệu.'
+                    : 'AI đặt danh sách dưới tên khác — đã tự vá vỏ JSON, giữ nguyên dữ liệu.'}
+                </p>
               )}
               {operationView.diagnostic.responsePreview && operationView.diagnostic.phase === 'reading_body' && (
                 <p className="mt-1 break-words font-mono text-[10px] text-slate-500">Preview: {operationView.diagnostic.responsePreview}</p>

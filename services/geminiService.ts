@@ -16,7 +16,7 @@ import {
   updateKeyState,
 } from "./aiRuntime";
 import { ContextExtractionValidationError, normalizeContextExtraction } from "./contextExtraction";
-import { AIJsonParseError, parseAIJsonResponse, parseFastCompatibleAIJsonResponse } from "./aiJson";
+import { AIJsonParseError, parseAIJsonResponse, parseFastCompatibleAIJsonResponse, unwrapItemsEnvelope } from "./aiJson";
 import { AIDiagnostic, AIDiagnosticPhase, createDiagnosticId, sanitizeDiagnosticText, sanitizeResponsePreview } from "./aiDiagnostics";
 import { ThinkingProfile, ThinkingStatus, ThinkingPolicyError, resolveThinkingPolicy } from "./aiReasoningPolicy";
 import {
@@ -876,17 +876,21 @@ const executeOpenAIAttempt = async <T>(
     throw error;
   }
   if (outputContract.unwrapItems) {
-    if (Array.isArray(parsed)) {
-      // Prompt-only fallback providers can still return the legacy raw array.
-    } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown }).items)) {
-      parsed = (parsed as { items: unknown[] }).items;
-    } else {
+    // Envelope-only mismatches (a bare item object, a differently named wrapper)
+    // still carry complete data, so salvage them instead of discarding a reply
+    // the model already finished and billed. Anything else fails loudly.
+    const envelope = unwrapItemsEnvelope(parsed);
+    if (!envelope) {
       throw new AIJsonParseError(
         'INVALID_JSON',
         'AI đã hoàn tất phản hồi nhưng không trả object {"items": [...]} theo định dạng yêu cầu. [OUTPUT_FORMAT_MISMATCH]',
         text,
       );
     }
+    if (envelope.source === 'alias' || envelope.source === 'single-object') {
+      onDiagnostic?.('parsing', { envelopeRepair: envelope.source });
+    }
+    parsed = envelope.items;
   }
   onDiagnostic?.('validating', { receivedItems: Array.isArray(parsed) ? parsed.length : undefined });
   return parsed as T;
@@ -1196,6 +1200,28 @@ const splitScriptByCode = (text: string, logic: string = 'default'): string[] =>
 
   return chunks.map(restoreProtected).filter(c => c.replace(/[^a-zA-Z0-9À-ỹ]/g, '').length > 0);
 };
+
+/**
+ * Normalizes any array-schema reply into a list. Gemini and the OpenAI-compatible
+ * transports both hand back whatever the model produced, and a model answering a
+ * one-item batch often sends the lone object — iterating that directly would
+ * throw and cost the whole batch.
+ */
+const asItemList = (generated: unknown): any[] => {
+  if (Array.isArray(generated)) return generated;
+  return (unwrapItemsEnvelope(generated)?.items as any[]) || [];
+};
+
+/**
+ * Directive added to a prompt round that follows a rejected reply. A repair
+ * call must ASK DIFFERENTLY: repeating the identical request usually reproduces
+ * the same envelope habit, so the retry restates the shape and the exact ids
+ * that are still missing.
+ */
+export const buildPromptFormatRepairHint = (sceneIds: number[], afterRejection = true): string =>
+  `\n${afterRejection
+    ? 'FORMAT REPAIR — the previous reply was rejected for its SHAPE, not its content. '
+    : 'OUTPUT SHAPE — '}Return ONE JSON array holding EXACTLY ${sceneIds.length} object(s), one per id [${sceneIds.join(', ')}], each with every required field. Never return a bare single object, never wrap it in prose or markdown.`;
 
 const SCENE_SCHEMA = { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.INTEGER }, visualDescription: { type: Type.STRING }, characterDetails: { type: Type.STRING }, settingTime: { type: Type.STRING }, duration: { type: Type.STRING, enum: ["8s"] } }, required: ["id", "visualDescription", "characterDetails", "settingTime", "duration"] } };
 const PROMPT_SCHEMA = {
@@ -2125,7 +2151,7 @@ CRITICAL: Return a JSON array with EXACTLY ${pendingIndices.length} items. The '
         const aiResults = await callAISafe<any[]>(`CONTEXT: ${globalContext}\n\nTEXT CHUNKS:\n${promptTexts}`, systemInstruction, SCENE_SCHEMA, 0.4, 'scene', undefined, operation);
         const successfulIds: number[] = [];
         
-        for (const res of aiResults) {
+        for (const res of asItemList(aiResults)) {
           const idx = res.id - 1;
           if (pendingIndices.includes(idx)) {
             // 👉 Lọc tên thật ngay tại cửa nhập — nếu AI quên luật, code vẫn thay tất định.
@@ -2243,7 +2269,7 @@ CRITICAL: Return a JSON array with EXACTLY ${pending.length} items. The 'id' mus
           const aiResults = await callAISafe<any[]>(`CONTEXT: ${globalContext}\n\nTEXT CHUNKS:\n${currentPrompt}`, systemInstruction, SCENE_SCHEMA, 0.4, 'scene', undefined, operation);
           const successIds: number[] = [];
           
-          for (const res of aiResults) {
+          for (const res of asItemList(aiResults)) {
               const scene = pending.find(s => s.id === res.id);
               // 👉 Chốt chặn hình ảnh cấm ở luồng vá cảnh — dính thì để vòng sau tạo lại.
               const bannedHit = findBannedVisual(`${res.visualDescription || ''} ${res.settingTime || ''}`);
@@ -2435,6 +2461,8 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
     const processBatch = async (batch: Scene[], index: number): Promise<PromptItem[]> => {
       let pendingBatch = batch;
       let batchLoop = 0;
+      // Set after a rejected reply so the next round asks for the shape again.
+      let formatRepairHint = '';
       const maxBatchLoops = operation.speedMode === 'fast' ? 3 : 2;
       const validItems: PromptItem[] = [];
 
@@ -2531,12 +2559,13 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
         try {
           const payload = pendingBatch.map(makePayload);
           const generated = await callAISafe<any[]>(
-            `Generate structured prompts for:\n${JSON.stringify(payload)}\n`,
+            `Generate structured prompts for:\n${JSON.stringify(payload)}\n${formatRepairHint}`,
             systemInstruction, dynamicPromptSchema, 0.35, 'prompt', providerId, operation
           );
+          formatRepairHint = '';
 
           const acceptedIds: number[] = [];
-          for (const pi of generated) {
+          for (const pi of asItemList(generated)) {
             const scene = pendingBatch.find(s => s.id === pi.sceneId);
             if (!scene) continue;
             if (!hasAllRequiredFields(pi) && batchLoop < maxBatchLoops) continue;
@@ -2555,7 +2584,17 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           pendingBatch = pendingBatch.filter(s => !acceptedIds.includes(s.id));
         } catch (e: any) {
           const kind = classifyAIError(e).kind;
-          if (operation.speedMode === 'fast' && batchLoop < maxBatchLoops && kind !== 'authentication' && kind !== 'client') continue;
+          const fatal = kind === 'authentication' || kind === 'client' || kind === 'aborted';
+          // 👉 VÁ THEO CẢNH THIẾU: lỗi ĐỊNH DẠNG chỉ hỏng phản hồi của vòng này, không
+          // hỏng cảnh nào. Bỏ dữ liệu vòng đó, GIỮ NGUYÊN cảnh chưa xong rồi để vòng sau
+          // (đã kèm chỉ dẫn sửa dạng) và tầng cứu hộ từng cảnh vá lại. Mẻ còn >2 cảnh vẫn
+          // ném ra ngoài để resolvePromptBatch tách đôi — đó mới là thuốc cho output bị
+          // cắt vì mẻ quá lớn. Trước đây mẻ ≤2 cảnh ném thẳng ra ngoài nên chết cả phân đoạn.
+          if (!fatal && kind === 'format' && !shouldSplitPromptBatch(e, pendingBatch)) {
+            formatRepairHint = buildPromptFormatRepairHint(pendingBatch.map(s => s.id));
+            continue;
+          }
+          if (operation.speedMode === 'fast' && batchLoop < maxBatchLoops && !fatal) continue;
           throw new Error(`Mẻ ${index + 1} thất bại: ${e.message || e}`);
         }
       }
@@ -2572,10 +2611,10 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           for (let attempt = 0; attempt < maxRescueAttempts && !rescued; attempt++) {
             try {
               const generated = await callAISafe<any[]>(
-                `Generate structured prompts for:\n${JSON.stringify([makePayload(scene)])}\n`,
+                `Generate structured prompts for:\n${JSON.stringify([makePayload(scene)])}\n${buildPromptFormatRepairHint([scene.id], false)}`,
                 systemInstruction, dynamicPromptSchema, 0.4, 'prompt', providerId, rescueOperation
               );
-              const list = Array.isArray(generated) ? generated : [];
+              const list = asItemList(generated);
               const pi = list.find(g => g?.sceneId === scene.id) || list[0];
               if (pi && typeof pi.action === 'string' && pi.action.trim().length > 0) {
                 pushAccepted({ ...pi, sceneId: scene.id }, scene);

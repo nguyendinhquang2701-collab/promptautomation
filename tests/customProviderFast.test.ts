@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createOpenAIRequestPayload, DEFAULT_MAX_PROMPT_CHARS, getOpenAIChatCompletionsUrl, loadMaxPromptChars, recoverImageStyleFromMarkdown } from '../services/geminiService';
+import { unwrapItemsEnvelope } from '../services/aiJson';
+import { buildPromptFormatRepairHint, createOpenAIRequestPayload, extractOpenAIContent, DEFAULT_MAX_PROMPT_CHARS, getOpenAIChatCompletionsUrl, loadMaxPromptChars, recoverImageStyleFromMarkdown } from '../services/geminiService';
 
 const vilaoProvider = {
   id: 'vilao',
@@ -54,4 +55,27 @@ test('style markdown can be recovered without re-uploading the image', () => {
   const recovered = recoverImageStyleFromMarkdown('summary: Historical Epic Cinema\n- **Medium:** Live-action realism\n- **Lighting:** Warm candlelight\n- **Mood:** Regal\n- **Cinematography:** Wide period composition');
   assert.equal(recovered?.summary, 'Historical Epic Cinema');
   assert.match(recovered?.analysis || '', /Warm candlelight/);
+});
+
+test('a repair round names the still-missing ids instead of repeating the same ask', () => {
+  const repair = buildPromptFormatRepairHint([142, 143]);
+  assert.match(repair, /FORMAT REPAIR/);
+  assert.match(repair, /EXACTLY 2 object/);
+  assert.match(repair, /\[142, 143\]/);
+  assert.match(repair, /Never return a bare single object/);
+
+  const firstAsk = buildPromptFormatRepairHint([142], false);
+  assert.doesNotMatch(firstAsk, /FORMAT REPAIR/);
+  assert.match(firstAsk, /EXACTLY 1 object/);
+});
+
+test('a finished reply that drops the items envelope is salvaged, not thrown away', () => {
+  // Real INVALID_JSON/OUTPUT_FORMAT_MISMATCH body: finish_reason "stop", one
+  // complete scene object, only the {"items": [...]} wrapper missing.
+  const rawBody = "{\"id\": \"6546cec8-990e-49d7-a103-9a8e5e1c2c33\", \"object\": \"chat.completion\", \"model\": \"deepseek-v4-flash\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": \"{\\\"sceneId\\\": 142, \\\"camera_angle\\\": \\\"eye-level\\\", \\\"shot_size\\\": \\\"close-up\\\", \\\"setting\\\": \\\"hospital office desk, 1940s\\\", \\\"action\\\": \\\"A doctor writes on a medical chart.\\\", \\\"style\\\": \\\"Soft, muted colors, documentary realism.\\\"}\"}, \"finish_reason\": \"stop\"}], \"usage\": {\"completion_tokens\": 191}}";
+  const content = extractOpenAIContent(rawBody);
+  const envelope = unwrapItemsEnvelope(JSON.parse(content));
+  assert.equal(envelope?.source, 'single-object');
+  assert.equal(envelope?.items.length, 1);
+  assert.equal((envelope?.items[0] as { sceneId: number }).sceneId, 142);
 });
