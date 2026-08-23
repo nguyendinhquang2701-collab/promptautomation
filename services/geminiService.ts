@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Scene, ColorStyle, CharacterIdentity, PromptItem, PromptElement, SpeedMode } from "../types";
+import { Scene, ColorStyle, CharacterIdentity, PromptItem, PromptElement, SpeedMode, SearchKeyword } from "../types";
 import {
   AbortableFIFOLimiter,
   AIHttpError,
@@ -1353,7 +1353,44 @@ const buildPromptSchema = (els: PromptElement[]) => {
   }
   if (props.character) { /* character bật thì vẫn required như cũ */ required.push('character'); }
   props._subjects = coreProps._subjects;
+  // 👉 TỪ KHÓA TÌM ẢNH (tiếng Việt, best-effort — KHÔNG đưa vào 'required' để không bao
+  // giờ chặn/ép tạo lại prompt nếu AI lỡ bỏ sót). Tách riêng khỏi prompt Veo.
+  props.search_keywords = {
+    type: Type.ARRAY,
+    description: "EXACTLY 3 short bilingual image-search keywords for finding stock/Google illustration photos of this scene. Each 2-3 words (4 max), concrete visual nouns (place, object, subject, era) — NOT full sentences. This field is NOT part of the Veo prompt.",
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        en: { type: Type.STRING, description: "English keyword — the search-ready term for stock sites / Google Images. 2-3 words (4 max)." },
+        vi: { type: Type.STRING, description: "Vietnamese meaning of the same keyword (so the user understands it). 2-3 words (4 max)." }
+      },
+      required: ["en", "vi"]
+    }
+  };
   return { type: Type.ARRAY, items: { type: Type.OBJECT, properties: props, required } };
+};
+
+// 👉 Chuẩn hóa 3 từ khóa tìm ảnh SONG NGỮ từ output AI: gọn khoảng trắng, cắt còn tối đa
+// 4 từ/khóa, bỏ trùng theo bản tiếng Anh, lấy tối đa 3 cặp. Bỏ cặp thiếu tiếng Anh (vì đó
+// là bản dùng để tìm). Trả undefined nếu rỗng để UI tự ẩn — best-effort, không bao giờ ảnh
+// hưởng luồng tạo prompt.
+const normalizeSearchKeywords = (raw: unknown): SearchKeyword[] | undefined => {
+  if (!Array.isArray(raw)) return undefined;
+  const tidy = (s: unknown) => (typeof s === 'string' ? s.trim().replace(/\s+/g, ' ').split(' ').slice(0, 4).join(' ') : '');
+  const seen = new Set<string>();
+  const out: SearchKeyword[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const en = tidy((item as any).en);
+    const vi = tidy((item as any).vi);
+    if (!en) continue;
+    const key = en.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ en, vi: vi || en });
+    if (out.length >= 3) break;
+  }
+  return out.length ? out : undefined;
 };
 
 // 👉 TỪ VỰNG STOCK-SAFE: cố tình tiết chế. Ưu tiên medium/wide + camera tĩnh (tối đa
@@ -2347,6 +2384,7 @@ FIELD GUIDE:
 - action: the heart of the prompt (~40-70 words) — ONE single, natural, graceful, SIMPLE action unfolding smoothly across the 8 seconds. Show HOW it looks: posture, pace, gaze, the gentle motion around it. Must be ERROR-FREE (see NO ERRORS).
 - style: short style + color mood, ending exactly with "Rendered in the style of ${finalStyleStr}."
 - _subjects: comma-separated CANONICAL_NAMEs present (internal).
+- search_keywords: EXACTLY 3 bilingual keywords the user will copy to search stock sites / Google Images for a matching illustration photo of this scene. Each item = {"en": English search term, "vi": its Vietnamese meaning}. Each side 2-3 words (4 max), concrete visual nouns (place, object, subject, era) — e.g. [{"en":"coastal market","vi":"chợ ven biển"},{"en":"wooden sailing boat","vi":"thuyền buồm gỗ"},{"en":"ancient trade","vi":"buôn bán thời cổ"}]. This field is NOT part of the Veo prompt.
 ${aiExtraElements.length ? `
 ADDITIONAL FIELDS (the user enabled these — fill each one for EVERY scene, keep them SHORT):
 ${aiExtraElements.map(e => `- ${e.key}: ${e.instruction || e.label}`).join('\n')}
@@ -2396,7 +2434,7 @@ CONTEXT: ${globalContext}
 COLOR MOOD (fold into 'style'): ${colorMoodDesc}
 ${techDetailsStr}
 ${options?.audioMode !== 'keep' ? 'AUDIO: describe visuals only — no dialogue, no on-screen text, no music.' : ''}
-Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese.`;
+Do NOT output the real name of any public figure, do NOT invent characters or props absent from the input, do NOT write any Vietnamese in any field EXCEPT the "vi" side of "search_keywords".`;
 
   const promptBatchSize = operation.speedMode === 'fast' ? 5 : CONFIG.PROMPT_BATCH_SIZE;
   const batches = splitIntoBatches(segment.scenes, promptBatchSize);
@@ -2519,7 +2557,8 @@ Do NOT output the real name of any public figure, do NOT invent characters or pr
           sceneId: scene.id,
           sourceText: scene.sourceText,
           originalDescription: scene.visualDescription,
-          generatedPrompt: json
+          generatedPrompt: json,
+          searchKeywords: normalizeSearchKeywords(pi.search_keywords)
         });
       };
 
