@@ -12,6 +12,7 @@ interface PromptOutputProps {
 
 const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, onRetryPrompt, onShare }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedKeyword, setCopiedKeyword] = useState<string | null>(null);
   const [allCopied, setAllCopied] = useState(false);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [shareLink, setShareLink] = useState<string | null>(null);
@@ -37,6 +38,16 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
       setTimeout(() => setCopiedId(null), 2000);
     } catch (error) {
       console.error('Failed to copy', error);
+    }
+  };
+
+  const handleCopyKeyword = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKeyword(key);
+      setTimeout(() => setCopiedKeyword(null), 1500);
+    } catch (error) {
+      console.error('Failed to copy keyword', error);
     }
   };
 
@@ -230,6 +241,28 @@ const PromptOutput: React.FC<PromptOutputProps> = ({ projects, onReset, onBack, 
                             <h4 className="mb-2 text-[10px] font-bold uppercase tracking-tighter text-emerald-500">Generated Prompt (Veo 3)</h4>
                             <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-slate-800/80 bg-slate-950/50 p-4 font-mono text-sm font-medium leading-relaxed text-white">{item.generatedPrompt}</pre>
                           </div>
+
+                          {item.searchKeywords && item.searchKeywords.length > 0 && (
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <span className="text-[10px] font-bold uppercase tracking-tighter text-slate-500">🔍 Từ khóa tìm ảnh</span>
+                              {item.searchKeywords.map((kw, kwIndex) => {
+                                const kwKey = `${itemKey}-kw-${kwIndex}`;
+                                const isCopied = copiedKeyword === kwKey;
+                                return (
+                                  <button
+                                    key={kwKey}
+                                    onClick={() => handleCopyKeyword(kw.en, kwKey)}
+                                    title={`Copy từ khóa (tiếng Anh): ${kw.en}`}
+                                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-all ${isCopied ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300' : 'border-slate-700/70 bg-slate-800/60 text-slate-300 hover:border-indigo-500/40 hover:bg-slate-800'}`}
+                                  >
+                                    <span className="font-semibold">{kw.en}</span>
+                                    {kw.vi && kw.vi !== kw.en && <span className="text-slate-500">· {kw.vi}</span>}
+                                    <span className={isCopied ? 'text-emerald-400' : 'text-slate-600'}>{isCopied ? '✓' : '⧉'}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     );

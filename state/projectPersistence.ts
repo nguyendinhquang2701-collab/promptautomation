@@ -1,4 +1,4 @@
-import type { PromptItem, Scene, ScriptProject, StepStatus } from '../types';
+import type { PromptItem, Scene, ScriptProject, SearchKeyword, StepStatus } from '../types';
 
 const INTERRUPTED_SCENE_MESSAGE =
   'Tác vụ chia cảnh trước đó đã bị gián đoạn. Hãy thử lại.';
@@ -31,6 +31,19 @@ const normalizeScene = (value: unknown): Scene | null => {
   };
 };
 
+const normalizeSearchKeywords = (value: unknown): SearchKeyword[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const out: SearchKeyword[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const en = typeof item.en === 'string' ? item.en.trim() : '';
+    const vi = typeof item.vi === 'string' ? item.vi.trim() : '';
+    if (!en) continue;
+    out.push({ en, vi: vi || en });
+  }
+  return out.length ? out : undefined;
+};
+
 const normalizePromptItem = (value: unknown): PromptItem | null => {
   if (!isRecord(value) || typeof value.sceneId !== 'number' || !Number.isFinite(value.sceneId)) return null;
   if (typeof value.generatedPrompt !== 'string') return null;
@@ -39,6 +52,7 @@ const normalizePromptItem = (value: unknown): PromptItem | null => {
     sourceText: typeof value.sourceText === 'string' ? value.sourceText : undefined,
     originalDescription: typeof value.originalDescription === 'string' ? value.originalDescription : '',
     generatedPrompt: value.generatedPrompt,
+    searchKeywords: normalizeSearchKeywords(value.searchKeywords),
   };
 };
 

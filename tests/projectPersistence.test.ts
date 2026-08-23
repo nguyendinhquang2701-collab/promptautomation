@@ -72,6 +72,34 @@ test('one corrupt entry never erases otherwise valid projects', () => {
   assert.equal(report.projects[0].content, valid.content);
 });
 
+test('bilingual search keywords survive a save/restore round-trip', () => {
+  const withKeywords = project();
+  withKeywords.promptItems[0].searchKeywords = [
+    { en: 'coastal market', vi: 'chợ ven biển' },
+    { en: 'wooden sailing boat', vi: 'thuyền buồm gỗ' },
+  ];
+  const [restored] = hydrateProjects(serializeProjects([withKeywords]));
+  assert.deepEqual(restored.promptItems[0].searchKeywords, [
+    { en: 'coastal market', vi: 'chợ ven biển' },
+    { en: 'wooden sailing boat', vi: 'thuyền buồm gỗ' },
+  ]);
+});
+
+test('prompt items without keywords stay undefined and malformed keyword entries are dropped', () => {
+  const legacy = project() as unknown as Record<string, unknown>;
+  (legacy.promptItems as any[])[0].searchKeywords = [
+    { en: 'valid one', vi: 'hợp lệ' },
+    { vi: 'thiếu tiếng anh' },
+    'not an object',
+  ];
+  const [restored] = hydrateProjects(JSON.stringify([legacy]));
+  assert.deepEqual(restored.promptItems[0].searchKeywords, [{ en: 'valid one', vi: 'hợp lệ' }]);
+
+  const plain = project();
+  const [restoredPlain] = hydrateProjects(serializeProjects([plain]));
+  assert.equal(restoredPlain.promptItems[0].searchKeywords, undefined);
+});
+
 test('legacy scenes with missing optional fields are recovered instead of dropping the draft', () => {
   const legacy = project() as unknown as Record<string, unknown>;
   legacy.scenes = [{ id: 7, sourceText: 'Cảnh cũ', visualDescription: 'Mô tả cũ' }];

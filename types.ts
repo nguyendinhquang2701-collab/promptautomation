@@ -28,11 +28,22 @@ export interface CharacterIdentity {
 
 export type SpeedMode = 'fast' | 'ultra' | 'ultra-max';
 
+// 👉 1 TỪ KHÓA TÌM ẢNH SONG NGỮ: 'en' để copy đi tìm chuẩn trên stock/Google,
+// 'vi' để hiểu nhanh nghĩa. Mỗi bản 2-3 từ (dài lắm 4).
+export interface SearchKeyword {
+  en: string;
+  vi: string;
+}
+
 export interface PromptItem {
   sceneId: number;
   sourceText?: string;
   originalDescription: string;
   generatedPrompt: string;
+  // 👉 3 TỪ KHÓA SONG NGỮ để người dùng copy đi tìm ảnh minh họa trên kho stock / Google.
+  // TÁCH RIÊNG — KHÔNG nhét vào generatedPrompt để prompt Veo vẫn 100% tiếng Anh và nút
+  // "Copy tất cả / Tải file" không bị lẫn từ khóa.
+  searchKeywords?: SearchKeyword[];
 }
 
 export type ColorStyle = 'default' | 'cinematic' | 'hot' | 'warm' | 'cold';
