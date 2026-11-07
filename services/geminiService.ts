@@ -199,12 +199,13 @@ const synthesizeAppearance = (c: CharacterIdentity): string => {
   const female = /\b(woman|female|girl|lady|queen|princess|empress|matriarch|nun|mother|wife|daughter|actress|she|her|hostess)\b|phụ nữ|thiếu nữ|cô gái|bà |nữ /.test(info);
   const old = /\b(elderly|old|aged|senior|veteran|grand)\b|già|cao tuổi|lớn tuổi|trung niên|tóc bạc|râu bạc/.test(info);
   const young = /\b(young|teen|youth|boy|girl|child|kid|student)\b|trẻ|thanh niên|thiếu niên/.test(info);
-  const ethn = (c.ethnicity && !APPEARANCE_JUNK.has(foldText(c.ethnicity.trim()))) ? c.ethnicity.trim() : 'white American';
+  // Không có quốc tịch mặc định: kịch bản không nêu thì bỏ trống, để bối cảnh kịch bản quyết định.
+  const ethn = (c.ethnicity && !APPEARANCE_JUNK.has(foldText(c.ethnicity.trim()))) ? c.ethnicity.trim() : '';
   const clo = (c.clothing && !APPEARANCE_JUNK.has(foldText(c.clothing.trim()))) ? c.clothing.trim() : 'plain neutral everyday clothing';
   const age = old ? 'middle-aged' : young ? 'young' : 'adult';
   const gender = female ? 'woman' : 'man';
   const hair = female ? 'shoulder-length dark hair' : 'short dark hair';
-  return `${age} ${ethn} ${gender}, oval face, ${hair}, medium build, ${clo}`;
+  return `${[age, ethn, gender].filter(Boolean).join(' ')}, oval face, ${hair}, medium build, ${clo}`;
 };
 const ensureAppearance = (c: CharacterIdentity): CharacterIdentity => {
   const cleaned = stripIdentityTitles((c.visualDescription || '').trim()).trim();
@@ -1448,10 +1449,11 @@ S3. WHEN A PERSON JOINS AN OBJECT (optional, not required): keep the object as t
 S4. SENSITIVE/VIOLENT EVENTS → AFTERMATH WITH PEOPLE, NEVER GORE. Never depict weapons being aimed or fired, fighting, corpses, blood, wounds, graves, skulls, or people in terror. Tell such moments through a calm aftermath that still contains people doing ordinary actions: soldiers slowly patrolling an empty square at dawn, a woman picking up a fallen hat, villagers walking silently past shuttered houses, mourners placing flowers and candles. The frame must never be empty scenery alone.
 S5. CROWD LIMIT. At most 3-5 clearly visible people in the foreground; any larger gathering appears only as soft-focus silhouettes or indistinct shapes in the background. Never describe "thousands of people", "a sea of faces", or a dense packed crowd in sharp focus.
 S6. NO READABLE TEXT. Never show text meant to be read: headlines, labels, dates, calendar pages, signs, screens, typed words. Show the passage of time through nature and light instead (leaves falling, a candle burning down, light shifting across a room, seasons changing outside a window).
-S7. EXPLICIT ETHNICITY & ERA FOR EVERY PERSON (target audience: American viewers). NEVER write a bare, ambiguous person ("a woman", "a farmer", "a man in a suit") — every person in every field MUST carry an explicit nationality/ethnicity descriptor plus era-appropriate clothing. Decide it in this priority order:
-   a) If the narration states or implies the person's nationality/ethnicity (Colombian workers, Guatemalan president, Arab traders...) → use exactly that.
-   b) Else if the scene's location/era clearly belongs to a specific country or culture (a highland village in New Guinea, a Caribbean port, a Colombian plantation...) → use people native to that place and time.
-   c) Otherwise → DEFAULT to a white American person, styled correctly for the era: modern-day scenes get contemporary American looks (e.g. "a white American woman in her 30s, casual modern clothes"); historical American scenes get period-accurate dress (e.g. "a white American man in 1950s attire").
+S7. ETHNICITY & ERA COME FROM THIS SCRIPT'S OWN STORY. NEVER write a bare, ambiguous person ("a woman", "a farmer", "a man in a suit") — every person carries an ethnicity/nationality descriptor plus era-appropriate clothing, and that descriptor MUST be taken from this script's own setting and characters. There is NO default nationality. Decide it in this priority order:
+   a) If the narration states or implies the person's nationality/ethnicity (Colombian workers, Guatemalan president, Arab traders, Vietnamese villagers...) → use exactly that.
+   b) Else if the scene's location/era clearly belongs to a specific country or culture (a highland village in New Guinea, a Caribbean port, a Colombian plantation, a Hanoi street...) → use people native to that place and time.
+   c) Else → follow the WHOLE STORY's setting: the country/culture where this script's story takes place (from the CONTEXT block and the other characters), so everyone stays consistent with the story's world.
+   d) Only if the entire script gives no clue at all → do NOT invent or assume any nationality (never fall back to American or any other fixed nationality); describe the person by neutral visible traits (age, skin tone, hair) plus era-appropriate clothing.
 S8. NO TRANSFORMATION MOMENTS. Video models CANNOT make an object change form mid-shot — they duplicate the object instead (the bunch stays on the tree AND appears in the hand). This applies to EVERY object and material: fruit, crops, wood, stone, cloth, rope, food, tools. NEVER depict the instant of cutting, chopping, slicing, peeling, splitting, breaking, cracking, grinding, crushing, pounding, reaping, felling, carving, sawing, tearing, squeezing. Choose the moment BEFORE or AFTER:
    - BEFORE (anticipation, no contact yet): the worker raises a machete toward the banana stem / the woodcutter rests his axe on his shoulder beside the tall tree / the cook places a whole fish on the board, knife resting beside it.
    - AFTER (result already done): the worker carries a freshly harvested banana bunch away — tree OUT of frame / split firewood lies stacked as the man wipes his brow / a farmer carries bundles of harvested rice stalks across the field / a bowl of ground spices sits beside the stone mortar.
@@ -1840,7 +1842,7 @@ const PLAN_SCHEMA = {
     properties: {
       sceneId: { type: Type.INTEGER },
       form: { type: Type.STRING, description: "The FORM of the scene's main subject, 2-6 words (e.g. 'hanging banana bunch', 'wooden crates of bananas', 'single ripe banana', 'steam locomotive', 'harbor cranes')." },
-      place: { type: Type.STRING, description: "Concrete location, 2-6 words (e.g. 'jungle plantation row', 'dockside market', '1950s American kitchen')." },
+      place: { type: Type.STRING, description: "Concrete location, 2-6 words (e.g. 'jungle plantation row', 'dockside market', '1950s family kitchen')." },
       era: { type: Type.STRING, description: "Era + light mood, 2-5 words, consistent with the script timeframe (e.g. 'colonial noon', '1950s tungsten evening', 'modern morning sun')." },
       shot: { type: Type.STRING, description: "Shot size + camera, 2-5 words from the stock-safe set (e.g. 'wide static', 'medium slow push-in')." },
       person_action: { type: Type.STRING, description: "Either 'none' (object/place-only scene) or ONE person + ONE continuous whole-body action, ≤10 words (e.g. 'a Guatemalan dockworker carries a crate'). Scenes with REQUIRED_CHARACTERS must feature those characters, never 'none'." }
@@ -2013,7 +2015,7 @@ CRITICAL RULES:
    2) BUILD: height / body build (e.g. "medium height, sturdy build").
    3) CLOTHING: garment type + color (e.g. "charcoal double-breasted suit, white shirt").
     ABSOLUTELY FORBIDDEN here (this field must NOT identify a real person): any personal name; any role, title, office, rank, or occupation used as identity (president, king, general, minister, senator, CEO, "democratically elected", "leader of ...", "president of Guatemala"); any country or organization named as a title; any famous event, position, or achievement. PHYSICAL LOOK ONLY. NEVER leave this empty for an extracted on-screen character.
-5. For "ethnicity": extract from the script if stated; else INFER from the character's story context (nationality/location/era — e.g. a Guatemalan president → "Guatemalan"); if the story gives NO such context at all, default to "white American" (the videos target American viewers). For "clothing": extract strictly from the script; if not mentioned, leave EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
+5. For "ethnicity": extract from the script if stated; else INFER from the character's story context (nationality/location/era — e.g. a Guatemalan president → "Guatemalan"); else use the country/culture where the whole story takes place. There is NO default nationality: if the script gives no clue at all, leave "ethnicity" EMPTY "" — never assume American or any other nationality. For "clothing": extract strictly from the script; if not mentioned, leave EMPTY "". ABSOLUTELY DO NOT output "Unspecified", "N/A", or "None".
 Output strictly valid JSON.`, 
       { type: Type.OBJECT, properties: { context: { type: Type.STRING }, characters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, promptName: { type: Type.STRING }, originalName: { type: Type.STRING }, isRealPerson: { type: Type.BOOLEAN }, ethnicity: { type: Type.STRING }, clothing: { type: Type.STRING }, visualDescription: { type: Type.STRING, description: "Physical appearance ONLY, comma-separated, ALWAYS FILLED for every extracted on-screen character: FACE (age, gender, facial features, hair, skin), then BUILD (height/build), then CLOTHING (type + color). NEVER a name, title, office, rank, occupation, country-as-title, or achievement (no 'president', 'general', 'president of Guatemala', 'democratically elected'), and never a real figure's signature features. Never empty." } }, required: ["name", "promptName", "originalName", "isRealPerson", "visualDescription"] } } }, required: ["context", "characters"] },
       0.4, 'scene', undefined, operation);
@@ -2141,7 +2143,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: give the chunk ONE clear subject in its real place and era — people only when they genuinely add interest, otherwise the object/place itself in a VARIED form/setting/era (per S2/S2b — never repeat the previous chunk's composition); NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: give the chunk ONE clear subject in its real place and era — people only when they genuinely add interest, otherwise the object/place itself in a VARIED form/setting/era (per S2/S2b — never repeat the previous chunk's composition); NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (taken from this script's own setting and characters — no default nationality, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
@@ -2259,7 +2261,7 @@ ${SINGLE_MOMENT_RULE}
 The 'visualDescription' and 'settingTime' you write MUST describe only the ONE selected moment for that chunk — a single location and a single primary action. Never describe two places or a sequence of actions.
 
 ${STORYTELLING_RULE}
-The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: give the chunk ONE clear subject in its real place and era — people only when they genuinely add interest, otherwise the object/place itself in a VARIED form/setting/era (per S2/S2b — never repeat the previous chunk's composition); NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (default: white American when the story doesn't specify, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
+The 'visualDescription' MUST follow the VISUAL STORYTELLING RULE above: give the chunk ONE clear subject in its real place and era — people only when they genuinely add interest, otherwise the object/place itself in a VARIED form/setting/era (per S2/S2b — never repeat the previous chunk's composition); NEVER maps, documents, newspapers, typewriters, calendars or readable text as the subject; violent moments become a calm aftermath WITH people present; crowds capped at 3-5 clearly visible people; EVERY person carries an explicit ethnicity + era descriptor (taken from this script's own setting and characters — no default nationality, per S7); NEVER the instant an object changes form — choose the moment BEFORE or AFTER, object in ONE place only (per S8).
 
 CONTEXT: ${globalContext}
 
@@ -2372,7 +2374,7 @@ export const generatePromptsForSingleSegment = async (
     try { visualPlans = await planVisualsForScenes(segment.scenes, globalContext, requiredCharsByScene, onStatusUpdate, operation); } catch { /* bỏ qua */ }
   }
 
-  const systemInstruction = `You are a video-prompt engineer for Veo 3 (8-second historical B-roll for American viewers).
+  const systemInstruction = `You are a video-prompt engineer for Veo 3 (8-second historical B-roll).
 For EACH input scene, output ONE JSON object with the fields below, all in ENGLISH. OUTPUT STRICTLY VALID JSON.
 Put MOST of your detail in "action"; keep every other field SHORT and plain — do not over-decorate them.
 
@@ -2404,7 +2406,7 @@ NO ERRORS (this is the #1 priority — a clean simple shot always beats a fancy 
 - Keep the main action simple and rigid — people carry, hold, walk, place, row, sweep, or speak. Pick actions that do not require an object to visibly transform mid-shot. Describe every object plainly and naturally, in as few words as it needs — no extra state adjectives.
 - An object appears in only ONE place in the frame (in a hand OR on a surface, never both).
 - At most 3-5 people in sharp focus; larger groups only as soft, out-of-focus background.
-- Every person carries an explicit ethnicity + era-appropriate clothing (default: a white American, era-correct, when the story doesn't specify).
+- Every person carries an ethnicity + era-appropriate clothing taken from THIS script's own setting and characters (stated nationality → the scene's place/era → the whole story's country/culture). There is NO default nationality — never assume American; if the script gives no clue, use neutral visible traits instead.
 - For anything violent, show a calm AFTERMATH with ordinary people instead of the violent instant.
 - Never show maps, documents, newspapers, readable text/labels/signs, or paperwork as the subject.
 

@@ -76,7 +76,7 @@ Also under diversity/watchability:
 - **Too long / padded**: the `action` field bloated with filler; "evoking a somber, contemplative atmosphere"-type phrases; more than one mood word. Keep `action` focused on ONE action; keep `setting`/`time`/`camera_*` short.
 - **Duplication across fields**: `setting` repeating what `action` already says; quality/color jargon appearing outside `style`.
 - **Conflicting lighting**: "high contrast" + "low contrast", "golden hour" + "10000K".
-- **Missing ethnicity/era descriptor**: any person written bare ("a woman", "a farmer") without nationality/ethnicity + era-appropriate clothing. Rule: (a) narration states nationality → use it; (b) location implies it → natives of that place/era; (c) otherwise default "white American", era-correct dress.
+- **Missing ethnicity/era descriptor**: any person written bare ("a woman", "a farmer") without nationality/ethnicity + era-appropriate clothing. Rule: (a) narration states nationality → use it; (b) location implies it → natives of that place/era; (c) otherwise the country/culture where the whole story takes place; (d) no clue at all → neutral visible traits, never an assumed nationality (no "white American" default).
 
 ## Output format (report in Vietnamese)
 
